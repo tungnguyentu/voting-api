@@ -1,0 +1,6 @@
+fastapi==0.116.0
+uvicorn==0.35.0
+redis==6.2.0
+pytest==8.4.1
+httpx==0.28.1
+fakeredis==2.31.0
