@@ -1,0 +1,108 @@
+# Voting API
+
+Python API và listener để dựng lịch sử `vote` và `attendance` từ app `voting`.
+
+## Mục tiêu
+
+Project này tách phần đọc lịch sử ra khỏi app `voting`.
+
+Luồng chính:
+
+1. Listener subscribe Redis monitor channel từ app `voting`
+2. Listener chuẩn hóa dữ liệu history và lưu sang Redis DB riêng
+3. FastAPI đọc dữ liệu history đã chuẩn hóa và trả qua API
+
+## API hiện có
+
+- `GET /history/vote`
+- `GET /history/attendance`
+
+Chi tiết response và mapping dữ liệu xem tại:
+
+- [docs/history-apis.md](docs/history-apis.md)
+
+## Cấu trúc
+
+- `app/main.py`: FastAPI app
+- `app/vote_history_listener.py`: listener nhận monitor events và ghi history
+- `app/vote_history_api.py`: loader đọc dữ liệu history từ Redis
+- `app/config.py`: cấu hình Redis keys, DB, monitor channel
+- `tests/`: test cho API và processor
+
+## Yêu cầu
+
+- Python 3.9+
+- Redis
+- App `voting` đang publish monitor events
+
+## Cài đặt
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Windows PowerShell:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+## Cấu hình
+
+Các biến môi trường hỗ trợ:
+
+- `SOURCE_REDIS_URL`
+- `HISTORY_REDIS_URL`
+- `SOURCE_VOTING_RESULT_KEY`
+- `HISTORY_VOTE_KEY`
+- `HISTORY_ATTENDANCE_KEY`
+- `ACTIVE_VOTE_KEY`
+- `ACTIVE_ATTENDANCE_KEY`
+- `DELEGATE_DIRECTORY_KEY`
+- `MONITOR_CHANNEL`
+
+Mặc định:
+
+- `SOURCE_REDIS_URL=redis://localhost:6379/0`
+- `HISTORY_REDIS_URL=redis://localhost:6379/1`
+- `SOURCE_VOTING_RESULT_KEY=voting_result`
+- `MONITOR_CHANNEL=voting_monitor_channel`
+
+## Chạy listener
+
+```bash
+python3 -m app.vote_history_listener
+```
+
+Listener sẽ:
+
+- listen `MONITOR_CHANNEL`
+- lấy lifecycle event cho `VOTE` và `ATTENDANCE`
+- đọc thêm snapshot `voting_result`
+- ghi dữ liệu history sang history Redis DB
+
+## Chạy API
+
+```bash
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Truy cập:
+
+- `http://127.0.0.1:8000/history/vote`
+- `http://127.0.0.1:8000/history/attendance`
+- `http://127.0.0.1:8000/docs`
+
+## Verify
+
+```bash
+python3 -m pytest tests/test_vote_history_api.py tests/test_vote_history_processor.py -q
+python3 -m compileall app tests
+```
+
+## Ghi chú
+
+- `/history/vote` lấy `time` từ monitor events và enrich delegate data từ `voting_result.contact`
+- `/history/attendance` lấy `time` từ monitor events, danh sách present từ `voting_result.vote.ATTENDANCE`, và enrich delegate data từ `voting_result.contact`
+- `delegate_address` là địa chỉ thật ghép từ `Street`, `StreetNumber`, `City`
+- `delegate_group_name` được giữ riêng, không nhét vào `delegate_address`
