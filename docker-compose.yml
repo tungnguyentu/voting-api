@@ -1,0 +1,35 @@
+services:
+  api:
+    build:
+      context: .
+    container_name: voting-api
+    ports:
+      - "8000:8000"
+    environment:
+      SOURCE_REDIS_URL: ${SOURCE_REDIS_URL:-redis://10.192.202.210:6379/0}
+      HISTORY_REDIS_URL: ${HISTORY_REDIS_URL:-redis://10.192.202.210:6379/1}
+      SOURCE_VOTING_RESULT_KEY: ${SOURCE_VOTING_RESULT_KEY:-voting_result}
+      HISTORY_VOTE_KEY: ${HISTORY_VOTE_KEY:-vote_history}
+      HISTORY_ATTENDANCE_KEY: ${HISTORY_ATTENDANCE_KEY:-attendance_history}
+      ACTIVE_VOTE_KEY: ${ACTIVE_VOTE_KEY:-vote_history_active}
+      ACTIVE_ATTENDANCE_KEY: ${ACTIVE_ATTENDANCE_KEY:-attendance_history_active}
+      DELEGATE_DIRECTORY_KEY: ${DELEGATE_DIRECTORY_KEY:-delegate_directory}
+      MONITOR_CHANNEL: ${MONITOR_CHANNEL:-voting_monitor_channel_6}
+    restart: unless-stopped
+
+  listener:
+    build:
+      context: .
+    container_name: voting-history-listener
+    command: ["python", "-m", "app.vote_history_listener"]
+    environment:
+      SOURCE_REDIS_URL: ${SOURCE_REDIS_URL:-redis://10.192.202.210:6379/0}
+      HISTORY_REDIS_URL: ${HISTORY_REDIS_URL:-redis://10.192.202.210:6379/1}
+      SOURCE_VOTING_RESULT_KEY: ${SOURCE_VOTING_RESULT_KEY:-voting_result}
+      HISTORY_VOTE_KEY: ${HISTORY_VOTE_KEY:-vote_history}
+      HISTORY_ATTENDANCE_KEY: ${HISTORY_ATTENDANCE_KEY:-attendance_history}
+      ACTIVE_VOTE_KEY: ${ACTIVE_VOTE_KEY:-vote_history_active}
+      ACTIVE_ATTENDANCE_KEY: ${ACTIVE_ATTENDANCE_KEY:-attendance_history_active}
+      DELEGATE_DIRECTORY_KEY: ${DELEGATE_DIRECTORY_KEY:-delegate_directory}
+      MONITOR_CHANNEL: ${MONITOR_CHANNEL:-voting_monitor_channel_6}
+    restart: unless-stopped

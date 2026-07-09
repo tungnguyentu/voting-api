@@ -1,6 +1,8 @@
 import json
+import logging
+import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from redis import Redis
 
@@ -15,6 +17,8 @@ from app.config import (
     SOURCE_REDIS_URL,
     SOURCE_VOTING_RESULT_KEY,
 )
+
+log = logging.getLogger("vote_history_listener")
 
 
 class VoteHistoryProcessor:
@@ -39,6 +43,10 @@ class VoteHistoryProcessor:
         self.delegate_directory_key = delegate_directory_key
 
     def handle_event(self, event: dict[str, Any], timestamp: Optional[str] = None) -> None:
+        if not self._is_valid_event(event):
+            log.warning("Ignoring invalid monitor event: %s", event)
+            return
+
         event_type = event.get("event_type")
         payload = event.get("payload", {})
         display = payload.get("display")
@@ -70,6 +78,19 @@ class VoteHistoryProcessor:
         if event_type == "SET_STOP" and display == "VOTE":
             self.finish_vote_session(event_time)
 
+    def recover_active_sessions(self, timestamp: Optional[str] = None) -> None:
+        recovery_time = timestamp or datetime.now().astimezone().isoformat()
+
+        active_vote = self._load_json(self.active_vote_key)
+        if active_vote:
+            log.warning("Recovering incomplete vote session: %s", active_vote.get("vote_index"))
+            self.finish_vote_session(recovery_time, status="incomplete_recovered")
+
+        active_attendance = self._load_json(self.active_attendance_key)
+        if active_attendance:
+            log.warning("Recovering incomplete attendance session: %s", active_attendance.get("attendance_index"))
+            self.finish_attendance_session(recovery_time, status="incomplete_recovered")
+
     def start_attendance_session(self, started_at: str) -> None:
         history = self._load_attendance_history()
         active_attendance = {
@@ -95,6 +116,7 @@ class VoteHistoryProcessor:
 
         source_payload = self.source_redis.get(self.source_voting_result_key)
         if source_payload is None:
+            log.warning("Cannot update attendance results because source key '%s' is missing", self.source_voting_result_key)
             return
 
         data = json.loads(source_payload)
@@ -129,7 +151,7 @@ class VoteHistoryProcessor:
 
         self._save_json(self.active_vote_key, active_vote)
 
-    def finish_vote_session(self, ended_at: str) -> None:
+    def finish_vote_session(self, ended_at: str, status: Optional[str] = None) -> None:
         active_vote = self._load_json(self.active_vote_key)
         if not active_vote:
             return
@@ -139,18 +161,7 @@ class VoteHistoryProcessor:
         items = []
         for delegate_id, result in active_vote.get("items_by_delegate", {}).items():
             delegate = directory.get(str(delegate_id), {})
-            items.append(
-                {
-                    "delegate_id": int(delegate_id),
-                    "delegate_name": delegate.get("delegate_name"),
-                    "delegate_address": delegate.get("delegate_address"),
-                    "delegate_group_name": delegate.get("delegate_group_name", ""),
-                    "delegate_street": delegate.get("delegate_street", ""),
-                    "delegate_street_number": delegate.get("delegate_street_number", ""),
-                    "delegate_city": delegate.get("delegate_city", ""),
-                    "result": result,
-                }
-            )
+            items.append(self._build_vote_item(int(delegate_id), delegate, result))
 
         started_at = active_vote["started_at"]
         history_item = {
@@ -160,13 +171,15 @@ class VoteHistoryProcessor:
             "duration_seconds": self._duration_seconds(started_at, ended_at),
             "items": items,
         }
+        if status:
+            history_item["status"] = status
 
         history = self._load_history()
         history.append(history_item)
         self._save_json(self.history_vote_key, history)
         self.history_redis.delete(self.active_vote_key)
 
-    def finish_attendance_session(self, ended_at: str) -> None:
+    def finish_attendance_session(self, ended_at: str, status: Optional[str] = None) -> None:
         active_attendance = self._load_json(self.active_attendance_key)
         if not active_attendance:
             return
@@ -180,15 +193,7 @@ class VoteHistoryProcessor:
         present = []
         missing = []
         for delegate_id, delegate in sorted(directory.items(), key=lambda item: int(item[0])):
-            delegate_record = {
-                "delegate_id": delegate["delegate_id"],
-                "delegate_name": delegate.get("delegate_name"),
-                "delegate_address": delegate.get("delegate_address", ""),
-                "delegate_group_name": delegate.get("delegate_group_name", ""),
-                "delegate_street": delegate.get("delegate_street", ""),
-                "delegate_street_number": delegate.get("delegate_street_number", ""),
-                "delegate_city": delegate.get("delegate_city", ""),
-            }
+            delegate_record = self._build_delegate_record(delegate)
             if delegate_id in present_delegate_ids:
                 present.append({**delegate_record, "result": "diemdanh"})
             else:
@@ -203,6 +208,8 @@ class VoteHistoryProcessor:
             "present": present,
             "missing": missing,
         }
+        if status:
+            history_item["status"] = status
 
         history = self._load_attendance_history()
         history.append(history_item)
@@ -212,6 +219,7 @@ class VoteHistoryProcessor:
     def refresh_delegate_directory(self) -> None:
         source_payload = self.source_redis.get(self.source_voting_result_key)
         if source_payload is None:
+            log.warning("Cannot refresh delegate directory because source key '%s' is missing", self.source_voting_result_key)
             return
 
         data = json.loads(source_payload)
@@ -249,6 +257,16 @@ class VoteHistoryProcessor:
         self.history_redis.set(key, json.dumps(value))
 
     @staticmethod
+    def _is_valid_event(event: Any) -> bool:
+        if not isinstance(event, dict):
+            return False
+        if not isinstance(event.get("event_type"), str):
+            return False
+        if not isinstance(event.get("payload"), dict):
+            return False
+        return True
+
+    @staticmethod
     def _find_option(voting_options: dict[str, Any], voting_option_id: Any) -> Optional[dict[str, Any]]:
         option_key = str(voting_option_id)
         if option_key in voting_options:
@@ -263,28 +281,89 @@ class VoteHistoryProcessor:
         ended = datetime.fromisoformat(ended_at)
         return int((ended - started).total_seconds())
 
+    @staticmethod
+    def _build_delegate_record(delegate: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "delegate_id": delegate["delegate_id"],
+            "delegate_name": delegate.get("delegate_name"),
+            "delegate_address": delegate.get("delegate_address", ""),
+            "delegate_group_name": delegate.get("delegate_group_name", ""),
+            "delegate_street": delegate.get("delegate_street", ""),
+            "delegate_street_number": delegate.get("delegate_street_number", ""),
+            "delegate_city": delegate.get("delegate_city", ""),
+        }
+
+    def _build_vote_item(self, delegate_id: int, delegate: dict[str, Any], result: str) -> dict[str, Any]:
+        return {
+            **self._build_delegate_record({"delegate_id": delegate_id, **delegate}),
+            "result": result,
+        }
+
+
+def process_pubsub_message(processor: VoteHistoryProcessor, payload: str) -> bool:
+    try:
+        event = json.loads(payload)
+    except json.JSONDecodeError:
+        log.exception("Failed to decode monitor message")
+        return False
+
+    try:
+        processor.handle_event(event)
+    except Exception:
+        log.exception("Failed to process monitor message")
+        return False
+
+    return True
+
 
 def listen_vote_history(
     source_redis_url: str = SOURCE_REDIS_URL,
     history_redis_url: str = HISTORY_REDIS_URL,
     monitor_channel: str = MONITOR_CHANNEL,
+    redis_factory: Callable[..., Redis] = Redis.from_url,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    max_retries: Optional[int] = None,
+    stop_when_idle: bool = False,
 ) -> None:
-    source_redis = Redis.from_url(source_redis_url, decode_responses=True)
-    history_redis = Redis.from_url(history_redis_url, decode_responses=True)
-    processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
+    retry_count = 0
 
-    subscriber = source_redis.pubsub()
-    subscriber.subscribe(monitor_channel)
-    for message in subscriber.listen():
-        if message.get("type") != "message":
-            continue
+    while True:
+        try:
+            source_redis = redis_factory(source_redis_url, decode_responses=True)
+            history_redis = redis_factory(history_redis_url, decode_responses=True)
+            processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
+            processor.recover_active_sessions()
 
-        payload = message.get("data")
-        if not isinstance(payload, str):
-            continue
+            subscriber = source_redis.pubsub()
+            subscriber.subscribe(monitor_channel)
+            retry_count = 0
 
-        processor.handle_event(json.loads(payload))
+            for message in subscriber.listen():
+                if message.get("type") != "message":
+                    continue
+
+                payload = message.get("data")
+                if not isinstance(payload, str):
+                    log.warning("Ignoring non-string monitor payload: %s", type(payload).__name__)
+                    continue
+
+                process_pubsub_message(processor, payload)
+
+            if stop_when_idle:
+                return
+        except Exception:
+            retry_count += 1
+            log.exception("Vote history listener crashed, retrying")
+            if max_retries is not None and retry_count >= max_retries:
+                raise
+
+            backoff_seconds = min(2 ** (retry_count - 1), 30)
+            sleep_fn(backoff_seconds)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     listen_vote_history()

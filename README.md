@@ -93,6 +93,38 @@ Truy cập:
 - `http://127.0.0.1:8000/history/attendance`
 - `http://127.0.0.1:8000/docs`
 
+## Chạy bằng Docker Desktop
+
+Project có sẵn:
+
+- [Dockerfile](/Volumes/external/Projects 2/Voting/Dockerfile:1)
+- [docker-compose.yml](/Volumes/external/Projects 2/Voting/docker-compose.yml:1)
+
+Chạy:
+
+```bash
+docker compose up -d --build
+```
+
+Service được tạo:
+
+- `api`: FastAPI trên cổng `8000`
+- `listener`: process listen monitor channel và ghi history
+
+Dừng:
+
+```bash
+docker compose down
+```
+
+Nếu muốn override Redis/channel trên Windows, tạo file `.env` cạnh `docker-compose.yml`:
+
+```env
+SOURCE_REDIS_URL=redis://10.192.202.210:6379/0
+HISTORY_REDIS_URL=redis://10.192.202.210:6379/1
+MONITOR_CHANNEL=voting_monitor_channel_6
+```
+
 ## Verify
 
 ```bash

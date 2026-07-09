@@ -1,0 +1,10 @@
+.git
+.DS_Store
+.pytest_cache
+.serena
+__pycache__
+*.pyc
+progress.md
+session-handoff.md
+tests
+voting

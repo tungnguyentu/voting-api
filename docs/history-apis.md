@@ -50,6 +50,9 @@ Nhiệm vụ:
 - bắt event `GENERAL_VOTING_RESULT`
 - refresh delegate directory từ key nguồn `voting_result`
 - lưu dữ liệu history sang Redis DB riêng
+- tự reconnect khi Redis/pubsub lỗi
+- chống crash khi gặp payload lỗi
+- recover active session dang dở sau khi process restart
 
 ### 3. API đọc history
 
@@ -437,6 +440,19 @@ Listener sẽ:
 - subscribe `MONITOR_CHANNEL`
 - đọc event từ Redis nguồn
 - ghi history sang Redis history DB
+
+### Hardening hiện có
+
+Listener hiện đã có:
+
+- `try/except` cho từng message
+- validate monitor payload trước khi xử lý
+- reconnect loop với exponential backoff khi Redis/pubsub lỗi
+- recovery cho `vote_history_active` và `attendance_history_active`
+
+Khi recover active session dang dở, listener sẽ chốt session đó vào history với:
+
+- `status: "incomplete_recovered"`
 
 ### 2. Chạy API
 
