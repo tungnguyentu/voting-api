@@ -173,8 +173,18 @@ class VoteHistoryProcessor:
 
     def update_discuss_state(self, payload: dict[str, Any], event_time: str) -> None:
         active_discuss = self._load_json(self.active_discuss_key)
+        # Mic events can arrive without SET_START (listener restart, missed start).
+        # Auto-open an in-progress session so GET /history/discuss still gets live data.
         if not active_discuss:
-            return
+            display = payload.get("display") or "DISCUSS"
+            log.info(
+                "No active discuss session; creating one from MIC event (display=%s)",
+                display,
+            )
+            self.start_discuss_session(event_time, display=display)
+            active_discuss = self._load_json(self.active_discuss_key)
+            if not active_discuss:
+                return
 
         waiting = self._normalize_discuss_delegates(
             payload.get("waiting_delegates"),

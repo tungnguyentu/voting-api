@@ -401,6 +401,49 @@ def test_processor_recovers_incomplete_vote_session_on_startup() -> None:
     assert history_redis.get("vote_history_active") is None
 
 
+def test_discuss_mic_event_without_set_start_still_writes_history() -> None:
+    """Mic events alone must populate /history/discuss (no prior SET_START)."""
+    source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
+
+    processor.handle_event(
+        {
+            "event_type": "MIC_STATE_CHANGED_IN_RUNNING_MEETING",
+            "payload": {
+                "display": "DISCUSS",
+                "state": "On",
+                "waiting": [],
+                "talking": [
+                    "1217*/*Phạm Thị Thanh Mai            06. Đơn Vị Bầu Cử Số 6"
+                ],
+                "waiting_delegates": [],
+                "talking_delegates": [
+                    {
+                        "id": 1217,
+                        "display": "Phạm Thị Thanh Mai            06. Đơn Vị Bầu Cử Số 6",
+                    }
+                ],
+                "online": 0,
+            },
+        },
+        timestamp="2026-07-11T10:00:00+07:00",
+    )
+
+    stored = json.loads(history_redis.get("discuss_history"))
+    assert len(stored) == 1
+    assert stored[0]["status"] == "in_progress"
+    assert stored[0]["ended_at"] is None
+    assert stored[0]["talking"] == [
+        {
+            "delegate_id": 1217,
+            "display": "Phạm Thị Thanh Mai            06. Đơn Vị Bầu Cử Số 6",
+        }
+    ]
+    assert stored[0]["waiting"] == []
+    assert history_redis.get("discuss_history_active") is not None
+
+
 def test_discuss_history_processor_tracks_waiting_and_talking() -> None:
     source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
     history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
