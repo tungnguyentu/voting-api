@@ -104,6 +104,10 @@ class VoteHistoryProcessor:
             self.clear_attendance_session()
             return
 
+        if event_type == "SET_CLEAR" and display == "VOTE":
+            self.clear_vote_session()
+            return
+
         if event_type == "SET_CLEAR" and display in DISCUSS_DISPLAYS:
             self.clear_discuss_session()
             return
@@ -216,6 +220,11 @@ class VoteHistoryProcessor:
         """SET_CLEAR(display=DISCUSS|CHAT): drop active + completed discuss history."""
         self.history_redis.delete(self.active_discuss_key)
         self.history_redis.delete(self.history_discuss_key)
+
+    def clear_vote_session(self) -> None:
+        """SET_CLEAR(display=VOTE): drop active + completed vote history."""
+        self.history_redis.delete(self.active_vote_key)
+        self.history_redis.delete(self.history_vote_key)
 
     def update_attendance_snapshot(self, payload: dict[str, Any]) -> None:
         """Store latest present/missing while attendance is running (from voting app)."""

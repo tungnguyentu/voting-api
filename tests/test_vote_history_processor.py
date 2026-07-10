@@ -290,6 +290,39 @@ def test_attendance_set_clear_discards_active_and_completed_history() -> None:
     assert history_redis.get("attendance_history") is None
 
 
+def test_vote_set_clear_discards_active_and_completed_history() -> None:
+    source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis.set(
+        "vote_history",
+        json.dumps(
+            [
+                {
+                    "vote_index": 1,
+                    "started_at": "2026-07-09T11:15:03+07:00",
+                    "ended_at": "2026-07-09T11:16:22+07:00",
+                    "duration_seconds": 79,
+                    "items": [],
+                }
+            ]
+        ),
+    )
+    processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
+
+    processor.handle_event(
+        {"event_type": "SET_START", "payload": {"display": "VOTE"}},
+        timestamp="2026-07-09T12:00:00+07:00",
+    )
+    assert history_redis.get("vote_history_active") is not None
+
+    processor.handle_event(
+        {"event_type": "SET_CLEAR", "payload": {"display": "VOTE"}},
+    )
+
+    assert history_redis.get("vote_history_active") is None
+    assert history_redis.get("vote_history") is None
+
+
 def test_processor_recovers_incomplete_vote_session_on_startup() -> None:
     source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
     history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
