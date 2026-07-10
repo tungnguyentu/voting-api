@@ -17,6 +17,7 @@ from app.config import (
     SOURCE_REDIS_URL,
     SOURCE_VOTING_RESULT_KEY,
 )
+from app.redis_client import create_redis_client
 
 log = logging.getLogger("vote_history_listener")
 
@@ -320,7 +321,7 @@ def listen_vote_history(
     source_redis_url: str = SOURCE_REDIS_URL,
     history_redis_url: str = HISTORY_REDIS_URL,
     monitor_channel: str = MONITOR_CHANNEL,
-    redis_factory: Callable[..., Redis] = Redis.from_url,
+    redis_factory: Callable[..., Redis] = create_redis_client,
     sleep_fn: Callable[[float], None] = time.sleep,
     max_retries: Optional[int] = None,
     stop_when_idle: bool = False,
