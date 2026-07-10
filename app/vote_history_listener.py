@@ -141,8 +141,12 @@ class VoteHistoryProcessor:
         active_attendance = {
             "attendance_index": len(history) + 1,
             "started_at": started_at,
+            "present_delegates": {},
+            "contact_missing": [],
         }
         self._save_json(self.active_attendance_key, active_attendance)
+        # Live history: visible on API immediately after start
+        self._publish_attendance_history_snapshot(active_attendance, ended_at=None, status="in_progress")
 
     def start_vote_session(self, started_at: str) -> None:
         history = self._load_history()
@@ -152,6 +156,7 @@ class VoteHistoryProcessor:
             "items_by_delegate": {},
         }
         self._save_json(self.active_vote_key, active_vote)
+        self._publish_vote_history_snapshot(active_vote, ended_at=None, status="in_progress")
 
     def start_discuss_session(self, started_at: str, display: str = "DISCUSS") -> None:
         history = self._load_discuss_history()
@@ -164,6 +169,7 @@ class VoteHistoryProcessor:
             "events": [],
         }
         self._save_json(self.active_discuss_key, active_discuss)
+        self._publish_discuss_history_snapshot(active_discuss, ended_at=None, status="in_progress")
 
     def update_discuss_state(self, payload: dict[str, Any], event_time: str) -> None:
         active_discuss = self._load_json(self.active_discuss_key)
@@ -191,29 +197,19 @@ class VoteHistoryProcessor:
         )
         active_discuss["events"] = events
         self._save_json(self.active_discuss_key, active_discuss)
+        # Continuous upsert so GET /history/discuss sees live waiting/talking
+        self._publish_discuss_history_snapshot(active_discuss, ended_at=None, status="in_progress")
 
     def finish_discuss_session(self, ended_at: str, status: Optional[str] = None) -> None:
         active_discuss = self._load_json(self.active_discuss_key)
         if not active_discuss:
             return
 
-        started_at = active_discuss["started_at"]
-        history_item = {
-            "discuss_index": active_discuss["discuss_index"],
-            "display": active_discuss.get("display", "DISCUSS"),
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "duration_seconds": self._duration_seconds(started_at, ended_at),
-            "waiting": active_discuss.get("waiting") or [],
-            "talking": active_discuss.get("talking") or [],
-            "events": active_discuss.get("events") or [],
-        }
-        if status:
-            history_item["status"] = status
-
-        history = self._load_discuss_history()
-        history.append(history_item)
-        self._save_json(self.history_discuss_key, history)
+        self._publish_discuss_history_snapshot(
+            active_discuss,
+            ended_at=ended_at,
+            status=status,
+        )
         self.history_redis.delete(self.active_discuss_key)
 
     def clear_discuss_session(self) -> None:
@@ -241,6 +237,8 @@ class VoteHistoryProcessor:
         if contact_missing is not None:
             active_attendance["contact_missing"] = contact_missing
         self._save_json(self.active_attendance_key, active_attendance)
+        # Continuous upsert so GET /history/attendance sees live present/missing
+        self._publish_attendance_history_snapshot(active_attendance, ended_at=None, status="in_progress")
 
     def clear_attendance_session(self) -> None:
         """SET_CLEAR(display=ATTENDANCE): drop active + completed attendance history."""
@@ -265,33 +263,15 @@ class VoteHistoryProcessor:
             active_vote["items_by_delegate"][str(delegate_id)] = option.get("Name")
 
         self._save_json(self.active_vote_key, active_vote)
+        # Continuous upsert so GET /history/vote sees ballots before Stop
+        self._publish_vote_history_snapshot(active_vote, ended_at=None, status="in_progress")
 
     def finish_vote_session(self, ended_at: str, status: Optional[str] = None) -> None:
         active_vote = self._load_json(self.active_vote_key)
         if not active_vote:
             return
 
-        self.refresh_delegate_directory()
-        directory = self._load_json(self.delegate_directory_key) or {}
-        items = []
-        for delegate_id, result in active_vote.get("items_by_delegate", {}).items():
-            delegate = directory.get(str(delegate_id), {})
-            items.append(self._build_vote_item(int(delegate_id), delegate, result))
-
-        started_at = active_vote["started_at"]
-        history_item = {
-            "vote_index": active_vote["vote_index"],
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "duration_seconds": self._duration_seconds(started_at, ended_at),
-            "items": items,
-        }
-        if status:
-            history_item["status"] = status
-
-        history = self._load_history()
-        history.append(history_item)
-        self._save_json(self.history_vote_key, history)
+        self._publish_vote_history_snapshot(active_vote, ended_at=ended_at, status=status)
         self.history_redis.delete(self.active_vote_key)
 
     def finish_attendance_session(
@@ -347,23 +327,136 @@ class VoteHistoryProcessor:
         missing: list[dict[str, Any]],
         status: Optional[str] = None,
     ) -> None:
-        started_at = active_attendance["started_at"]
+        # Keep present/missing on active for snapshot builder, then finalize.
+        active_attendance["present"] = present
+        active_attendance["missing"] = missing
         ended_at = active_attendance.get("ended_at") or datetime.now().astimezone().isoformat()
-        history_item = {
+        self._publish_attendance_history_snapshot(
+            active_attendance,
+            ended_at=ended_at,
+            status=status,
+            present=present,
+            missing=missing,
+        )
+        self.history_redis.delete(self.active_attendance_key)
+
+    def _publish_vote_history_snapshot(
+        self,
+        active_vote: dict[str, Any],
+        ended_at: Optional[str],
+        status: Optional[str] = None,
+    ) -> None:
+        self.refresh_delegate_directory()
+        directory = self._load_json(self.delegate_directory_key) or {}
+        items = []
+        for delegate_id, result in active_vote.get("items_by_delegate", {}).items():
+            delegate = directory.get(str(delegate_id), {})
+            try:
+                parsed_id = int(delegate_id)
+            except (TypeError, ValueError):
+                parsed_id = delegate_id
+            items.append(self._build_vote_item(parsed_id, delegate, result))
+
+        started_at = active_vote["started_at"]
+        history_item: dict[str, Any] = {
+            "vote_index": active_vote["vote_index"],
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": (
+                self._duration_seconds(started_at, ended_at) if ended_at else None
+            ),
+            "items": items,
+        }
+        if status:
+            history_item["status"] = status
+        self._upsert_history_item(self.history_vote_key, "vote_index", history_item)
+
+    def _publish_attendance_history_snapshot(
+        self,
+        active_attendance: dict[str, Any],
+        ended_at: Optional[str],
+        status: Optional[str] = None,
+        present: Optional[list[dict[str, Any]]] = None,
+        missing: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        if present is None or missing is None:
+            present_delegates = active_attendance.get("present_delegates") or {}
+            contact_missing = active_attendance.get("contact_missing") or []
+            present = sorted(
+                (
+                    {**self._contact_to_record(contact, fallback_id=contact_id), "result": "diemdanh"}
+                    for contact_id, contact in present_delegates.items()
+                    if isinstance(contact, dict)
+                ),
+                key=lambda record: record["delegate_id"],
+            )
+            missing = sorted(
+                (
+                    self._contact_to_record(contact)
+                    for contact in contact_missing
+                    if isinstance(contact, dict)
+                ),
+                key=lambda record: record["delegate_id"],
+            )
+
+        started_at = active_attendance["started_at"]
+        history_item: dict[str, Any] = {
             "attendance_index": active_attendance["attendance_index"],
             "started_at": started_at,
             "ended_at": ended_at,
-            "duration_seconds": self._duration_seconds(started_at, ended_at),
+            "duration_seconds": (
+                self._duration_seconds(started_at, ended_at) if ended_at else None
+            ),
             "present": present,
             "missing": missing,
         }
         if status:
             history_item["status"] = status
+        self._upsert_history_item(self.history_attendance_key, "attendance_index", history_item)
 
-        history = self._load_attendance_history()
-        history.append(history_item)
-        self._save_json(self.history_attendance_key, history)
-        self.history_redis.delete(self.active_attendance_key)
+    def _publish_discuss_history_snapshot(
+        self,
+        active_discuss: dict[str, Any],
+        ended_at: Optional[str],
+        status: Optional[str] = None,
+    ) -> None:
+        started_at = active_discuss["started_at"]
+        history_item: dict[str, Any] = {
+            "discuss_index": active_discuss["discuss_index"],
+            "display": active_discuss.get("display", "DISCUSS"),
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": (
+                self._duration_seconds(started_at, ended_at) if ended_at else None
+            ),
+            "waiting": active_discuss.get("waiting") or [],
+            "talking": active_discuss.get("talking") or [],
+            "events": active_discuss.get("events") or [],
+        }
+        if status:
+            history_item["status"] = status
+        self._upsert_history_item(self.history_discuss_key, "discuss_index", history_item)
+
+    def _upsert_history_item(
+        self,
+        history_key: str,
+        index_field: str,
+        history_item: dict[str, Any],
+    ) -> None:
+        """Insert or replace session by index so live updates don't create duplicates."""
+        history = self._load_json(history_key) or []
+        if not isinstance(history, list):
+            history = []
+        index_value = history_item.get(index_field)
+        replaced = False
+        for i, existing in enumerate(history):
+            if isinstance(existing, dict) and existing.get(index_field) == index_value:
+                history[i] = history_item
+                replaced = True
+                break
+        if not replaced:
+            history.append(history_item)
+        self._save_json(history_key, history)
 
     @staticmethod
     def _extract_attendance_lists(

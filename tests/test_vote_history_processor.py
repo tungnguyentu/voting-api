@@ -70,6 +70,13 @@ def test_vote_history_processor_builds_history_with_vote_times_and_contact_fallb
         },
         timestamp="2026-07-09T11:15:20+07:00",
     )
+
+    # Live history must be readable from API before Stop
+    live_history = json.loads(history_redis.get("vote_history"))
+    assert live_history[0]["status"] == "in_progress"
+    assert live_history[0]["ended_at"] is None
+    assert len(live_history[0]["items"]) == 2
+
     processor.handle_event(
         {
             "event_type": "SET_STOP",
@@ -110,6 +117,8 @@ def test_vote_history_processor_builds_history_with_vote_times_and_contact_fallb
             ],
         }
     ]
+    # Still a single session after live upserts + stop finalize
+    assert len(stored_history) == 1
 
 
 def test_attendance_history_finalized_on_set_stop_with_present_and_missing() -> None:
@@ -164,6 +173,12 @@ def test_attendance_history_finalized_on_set_stop_with_present_and_missing() -> 
         },
         timestamp="2026-07-09T10:15:20+07:00",
     )
+
+    live_history = json.loads(history_redis.get("attendance_history"))
+    assert live_history[0]["status"] == "in_progress"
+    assert live_history[0]["ended_at"] is None
+    assert live_history[0]["present"][0]["delegate_id"] == 1200
+
     processor.handle_event(
         {
             "event_type": "SET_STOP",
@@ -209,6 +224,7 @@ def test_attendance_history_finalized_on_set_stop_with_present_and_missing() -> 
             ],
         }
     ]
+    assert len(stored_history) == 1
     assert history_redis.get("attendance_history_active") is None
 
 
@@ -408,6 +424,12 @@ def test_discuss_history_processor_tracks_waiting_and_talking() -> None:
         },
         timestamp="2026-07-09T14:01:00+07:00",
     )
+
+    live_history = json.loads(history_redis.get("discuss_history"))
+    assert live_history[0]["status"] == "in_progress"
+    assert live_history[0]["ended_at"] is None
+    assert live_history[0]["talking"][0]["delegate_id"] == 1200
+
     processor.handle_event(
         {"event_type": "SET_STOP", "payload": {"display": "DISCUSS"}},
         timestamp="2026-07-09T14:10:00+07:00",
@@ -433,6 +455,7 @@ def test_discuss_history_processor_tracks_waiting_and_talking() -> None:
             ],
         }
     ]
+    assert len(stored_history) == 1
     assert history_redis.get("discuss_history_active") is None
 
 

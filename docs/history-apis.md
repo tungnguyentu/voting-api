@@ -265,6 +265,15 @@ Hiện tại time được suy ra từ:
 - `ended_at`: lúc listener nhận `SET_STOP` cho `display=VOTE`
 - `duration_seconds`: hiệu số giữa `ended_at` và `started_at`
 
+### Live vs completed
+
+Listener **upsert** session vào `vote_history` liên tục:
+
+- `SET_START` / live results → `status: "in_progress"`, `ended_at: null`
+- `SET_STOP` → cùng `vote_index` được cập nhật, có `ended_at` / `duration_seconds`, bỏ `status` (hoặc status recover)
+
+API `GET /history/vote` đọc key history nên **thấy data ngay khi đang vote**, không cần chờ Stop.
+
 ### Response mẫu
 
 ```json
