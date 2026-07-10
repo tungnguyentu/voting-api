@@ -315,12 +315,10 @@ API `GET /history/vote` đọc key history nên **thấy data ngay khi đang vot
 
 ### Khi key chưa tồn tại
 
-API trả:
+API trả **200** với list rỗng:
 
 ```json
-{
-  "detail": "Redis key 'vote_history' was not found."
-}
+[]
 ```
 
 ---
@@ -410,12 +408,10 @@ App `voting/` cũng ghi snapshot Redis key `attendance_result` (source DB); list
 
 ### Khi key chưa tồn tại
 
-API trả:
+API trả **200** với list rỗng:
 
 ```json
-{
-  "detail": "Redis key 'attendance_history' was not found."
-}
+[]
 ```
 
 ---
@@ -483,12 +479,10 @@ Từ monitor event mic:
 
 ### Khi key chưa tồn tại
 
-API trả:
+API trả **200** với list rỗng:
 
 ```json
-{
-  "detail": "Redis key 'discuss_history' was not found."
-}
+[]
 ```
 
 ---

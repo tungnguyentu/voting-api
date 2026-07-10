@@ -60,14 +60,14 @@ def test_vote_history_returns_grouped_results_from_history_redis() -> None:
     ]
 
 
-def test_vote_history_returns_not_found_when_history_redis_key_is_missing() -> None:
+def test_vote_history_returns_empty_list_when_history_redis_key_is_missing() -> None:
     history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
     client = TestClient(create_app(history_redis_client=history_redis))
 
     response = client.get("/history/vote")
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Redis key 'vote_history' was not found."}
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_attendance_history_returns_grouped_results_from_history_redis() -> None:
@@ -146,14 +146,14 @@ def test_attendance_history_returns_grouped_results_from_history_redis() -> None
     ]
 
 
-def test_attendance_history_returns_not_found_when_history_redis_key_is_missing() -> None:
+def test_attendance_history_returns_empty_list_when_history_redis_key_is_missing() -> None:
     history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
     client = TestClient(create_app(history_redis_client=history_redis))
 
     response = client.get("/history/attendance")
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Redis key 'attendance_history' was not found."}
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_discuss_history_returns_grouped_results_from_history_redis() -> None:
@@ -208,14 +208,14 @@ def test_discuss_history_returns_grouped_results_from_history_redis() -> None:
     ]
 
 
-def test_discuss_history_returns_not_found_when_history_redis_key_is_missing() -> None:
+def test_discuss_history_returns_empty_list_when_history_redis_key_is_missing() -> None:
     history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
     client = TestClient(create_app(history_redis_client=history_redis))
 
     response = client.get("/history/discuss")
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Redis key 'discuss_history' was not found."}
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_cors_allows_configured_origins() -> None:
