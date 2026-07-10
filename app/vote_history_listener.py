@@ -538,7 +538,7 @@ def listen_vote_history(
     stop_when_idle: bool = False,
 ) -> None:
     retry_count = 0
-    print('================start app============')
+    print('start app worker')
     while True:
         try:
             source_redis = redis_factory(source_redis_url, decode_responses=True)
@@ -551,6 +551,7 @@ def listen_vote_history(
             retry_count = 0
 
             for message in subscriber.listen():
+                print('receive event', message)
                 if message.get("type") != "message":
                     continue
 
