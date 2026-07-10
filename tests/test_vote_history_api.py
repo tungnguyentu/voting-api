@@ -154,3 +154,24 @@ def test_attendance_history_returns_not_found_when_history_redis_key_is_missing(
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Redis key 'attendance_history' was not found."}
+
+
+def test_cors_allows_configured_origins() -> None:
+    history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    client = TestClient(create_app(history_redis_client=history_redis))
+
+    for origin in (
+        "https://ihdnd.hanoi.gov.vn",
+        "http://ihdnd.hanoi.gov.vn",
+        "http://10.10.98.186",
+        "https://10.10.98.186",
+    ):
+        response = client.options(
+            "/history/vote",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == origin

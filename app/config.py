@@ -11,3 +11,15 @@ ACTIVE_VOTE_KEY = os.getenv("ACTIVE_VOTE_KEY", "vote_history_active")
 ACTIVE_ATTENDANCE_KEY = os.getenv("ACTIVE_ATTENDANCE_KEY", "attendance_history_active")
 DELEGATE_DIRECTORY_KEY = os.getenv("DELEGATE_DIRECTORY_KEY", "delegate_directory")
 MONITOR_CHANNEL = os.getenv("MONITOR_CHANNEL", "voting_monitor_channel_6")
+
+_DEFAULT_CORS_ORIGINS = (
+    "https://ihdnd.hanoi.gov.vn,"
+    "http://ihdnd.hanoi.gov.vn,"
+    "http://10.10.98.186,"
+    "https://10.10.98.186"
+)
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", _DEFAULT_CORS_ORIGINS).split(",")
+    if origin.strip()
+]
