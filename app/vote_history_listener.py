@@ -53,9 +53,6 @@ class VoteHistoryProcessor:
         display = payload.get("display")
         event_time = timestamp or datetime.now().astimezone().isoformat()
 
-        if display == "ATTENDANCE":
-            self.refresh_delegate_directory()
-
         if event_type == "SET_START" and display == "ATTENDANCE":
             self.start_attendance_session(event_time)
             return
@@ -64,20 +61,23 @@ class VoteHistoryProcessor:
             self.start_vote_session(event_time)
             return
 
-        if event_type == "GENERAL_VOTING_RESULT" and display == "ATTENDANCE":
-            self.update_attendance_results()
-            return
-
         if event_type == "GENERAL_VOTING_RESULT" and display == "VOTE":
             self.update_vote_results(payload)
             return
 
         if event_type == "SET_STOP" and display == "ATTENDANCE":
-            self.finish_attendance_session(event_time)
+            self.record_attendance_stopped(event_time)
             return
 
         if event_type == "SET_STOP" and display == "VOTE":
             self.finish_vote_session(event_time)
+            return
+
+        # Present/missing delegate detail only arrives on CONTACT_MISSING_EVENT,
+        # which the source app emits after SET_STOP(ATTENDANCE). This is where the
+        # attendance session is actually finalized into history.
+        if event_type == "CONTACT_MISSING_EVENT":
+            self.finish_attendance_session(payload)
 
     def recover_active_sessions(self, timestamp: Optional[str] = None) -> None:
         recovery_time = timestamp or datetime.now().astimezone().isoformat()
@@ -90,14 +90,14 @@ class VoteHistoryProcessor:
         active_attendance = self._load_json(self.active_attendance_key)
         if active_attendance:
             log.warning("Recovering incomplete attendance session: %s", active_attendance.get("attendance_index"))
-            self.finish_attendance_session(recovery_time, status="incomplete_recovered")
+            active_attendance.setdefault("ended_at", recovery_time)
+            self._finalize_attendance(active_attendance, present=[], missing=[], status="incomplete_recovered")
 
     def start_attendance_session(self, started_at: str) -> None:
         history = self._load_attendance_history()
         active_attendance = {
             "attendance_index": len(history) + 1,
             "started_at": started_at,
-            "present_delegate_ids": [],
         }
         self._save_json(self.active_attendance_key, active_attendance)
 
@@ -110,27 +110,12 @@ class VoteHistoryProcessor:
         }
         self._save_json(self.active_vote_key, active_vote)
 
-    def update_attendance_results(self) -> None:
+    def record_attendance_stopped(self, ended_at: str) -> None:
         active_attendance = self._load_json(self.active_attendance_key)
         if not active_attendance:
             return
 
-        source_payload = self.source_redis.get(self.source_voting_result_key)
-        if source_payload is None:
-            log.warning("Cannot update attendance results because source key '%s' is missing", self.source_voting_result_key)
-            return
-
-        data = json.loads(source_payload)
-        attendance_sessions = data.get("vote", {}).get("ATTENDANCE", [])
-        if not attendance_sessions:
-            return
-
-        latest_attendance = attendance_sessions[-1]
-        active_attendance["present_delegate_ids"] = sorted(
-            int(delegate_id)
-            for delegate_id, result in latest_attendance.items()
-            if result
-        )
+        active_attendance["ended_at"] = ended_at
         self._save_json(self.active_attendance_key, active_attendance)
 
     def update_vote_results(self, payload: dict[str, Any]) -> None:
@@ -180,27 +165,37 @@ class VoteHistoryProcessor:
         self._save_json(self.history_vote_key, history)
         self.history_redis.delete(self.active_vote_key)
 
-    def finish_attendance_session(self, ended_at: str, status: Optional[str] = None) -> None:
+    def finish_attendance_session(self, payload: dict[str, Any], status: Optional[str] = None) -> None:
         active_attendance = self._load_json(self.active_attendance_key)
         if not active_attendance:
             return
 
-        self.refresh_delegate_directory()
-        directory = self._load_json(self.delegate_directory_key) or {}
-        present_delegate_ids = {
-            str(delegate_id) for delegate_id in active_attendance.get("present_delegate_ids", [])
-        }
+        present_delegates = payload.get("present_delegates") or {}
+        contact_missing = payload.get("contact_missing") or []
 
-        present = []
-        missing = []
-        for delegate_id, delegate in sorted(directory.items(), key=lambda item: int(item[0])):
-            delegate_record = self._build_delegate_record(delegate)
-            if delegate_id in present_delegate_ids:
-                present.append({**delegate_record, "result": "diemdanh"})
-            else:
-                missing.append(delegate_record)
+        present = sorted(
+            (
+                {**self._contact_to_record(contact, fallback_id=contact_id), "result": "diemdanh"}
+                for contact_id, contact in present_delegates.items()
+            ),
+            key=lambda record: record["delegate_id"],
+        )
+        missing = sorted(
+            (self._contact_to_record(contact) for contact in contact_missing),
+            key=lambda record: record["delegate_id"],
+        )
 
+        self._finalize_attendance(active_attendance, present, missing, status)
+
+    def _finalize_attendance(
+        self,
+        active_attendance: dict[str, Any],
+        present: list[dict[str, Any]],
+        missing: list[dict[str, Any]],
+        status: Optional[str] = None,
+    ) -> None:
         started_at = active_attendance["started_at"]
+        ended_at = active_attendance.get("ended_at") or datetime.now().astimezone().isoformat()
         history_item = {
             "attendance_index": active_attendance["attendance_index"],
             "started_at": started_at,
@@ -226,19 +221,7 @@ class VoteHistoryProcessor:
         data = json.loads(source_payload)
         directory = self._load_json(self.delegate_directory_key) or {}
         for delegate_id, contact in data.get("contact", {}).items():
-            street = contact.get("Street") or ""
-            street_number = contact.get("StreetNumber") or ""
-            city = contact.get("City") or ""
-            address_parts = [part for part in [street, street_number, city] if part]
-            directory[str(delegate_id)] = {
-                "delegate_id": int(contact.get("Id", delegate_id)),
-                "delegate_name": contact.get("Name"),
-                "delegate_address": ", ".join(address_parts),
-                "delegate_group_name": contact.get("GroupName") or "",
-                "delegate_street": street,
-                "delegate_street_number": street_number,
-                "delegate_city": city,
-            }
+            directory[str(delegate_id)] = self._contact_to_record(contact, fallback_id=delegate_id)
 
         self._save_json(self.delegate_directory_key, directory)
 
@@ -281,6 +264,22 @@ class VoteHistoryProcessor:
         started = datetime.fromisoformat(started_at)
         ended = datetime.fromisoformat(ended_at)
         return int((ended - started).total_seconds())
+
+    @staticmethod
+    def _contact_to_record(contact: dict[str, Any], fallback_id: Any = None) -> dict[str, Any]:
+        street = contact.get("Street") or ""
+        street_number = contact.get("StreetNumber") or ""
+        city = contact.get("City") or ""
+        address_parts = [part for part in [street, street_number, city] if part]
+        return {
+            "delegate_id": int(contact.get("Id", fallback_id)),
+            "delegate_name": contact.get("Name"),
+            "delegate_address": ", ".join(address_parts),
+            "delegate_group_name": contact.get("GroupName") or "",
+            "delegate_street": street,
+            "delegate_street_number": street_number,
+            "delegate_city": city,
+        }
 
     @staticmethod
     def _build_delegate_record(delegate: dict[str, Any]) -> dict[str, Any]:
@@ -327,7 +326,7 @@ def listen_vote_history(
     stop_when_idle: bool = False,
 ) -> None:
     retry_count = 0
-
+    print('================start app============')
     while True:
         try:
             source_redis = redis_factory(source_redis_url, decode_responses=True)

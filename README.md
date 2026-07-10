@@ -135,6 +135,6 @@ python3 -m compileall app tests
 ## Ghi chú
 
 - `/history/vote` lấy `time` từ monitor events và enrich delegate data từ `voting_result.contact`
-- `/history/attendance` lấy `time` từ monitor events, danh sách present từ `voting_result.vote.ATTENDANCE`, và enrich delegate data từ `voting_result.contact`
+- `/history/attendance` lấy `time` từ monitor events (`SET_START`/`SET_STOP`), còn `present`/`missing` (kèm delegate detail) lấy từ `CONTACT_MISSING_EVENT` (`payload.present_delegates` + `payload.contact_missing`); session được chốt khi nhận event này
 - `delegate_address` là địa chỉ thật ghép từ `Street`, `StreetNumber`, `City`
 - `delegate_group_name` được giữ riêng, không nhét vào `delegate_address`

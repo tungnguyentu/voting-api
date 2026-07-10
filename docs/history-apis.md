@@ -326,46 +326,36 @@ Trả lịch sử điểm danh theo từng lượt, gồm:
 Listener xử lý như sau:
 
 1. Nhận `SET_START` với `display=ATTENDANCE`
-2. Tạo active attendance session mới
-3. Nhận `GENERAL_VOTING_RESULT` với `display=ATTENDANCE`
-4. Không dùng payload event để lấy delegate detail
-5. Đọc snapshot `vote.ATTENDANCE` mới nhất từ key nguồn `voting_result`
-6. Xác định `present_delegate_ids`
-7. Nhận `SET_STOP` với `display=ATTENDANCE`
-8. Refresh delegate directory
-9. Build danh sách `present`
-10. Build danh sách `missing = toàn bộ delegates - present`
-11. Append vào key `attendance_history`
+2. Tạo active attendance session mới (chỉ ghi `started_at`)
+3. Nhận các `GENERAL_VOTING_RESULT` với `display=ATTENDANCE` (chỉ mang `online`/`total`, bỏ qua)
+4. Nhận `SET_STOP` với `display=ATTENDANCE` → ghi `ended_at` vào active session (chưa chốt)
+5. Nhận `CONTACT_MISSING_EVENT` (đến ngay sau, `display=CONTACT_MISSING`)
+6. Build danh sách `present` từ `payload.present_delegates`
+7. Build danh sách `missing` từ `payload.contact_missing`
+8. Append vào key `attendance_history` và xóa active session
 
 ### Dữ liệu attendance lấy từ đâu
 
-Nguồn chính để xác định ai đã điểm danh:
+Nguồn duy nhất để xác định ai điểm danh / ai vắng là event `CONTACT_MISSING_EVENT`
+(phát ra ngay sau `SET_STOP(ATTENDANCE)`):
 
-- `voting_result.vote.ATTENDANCE`
+- `payload.present_delegates` — map `{ "<contact_id>": <contact_info> }`, những người đã điểm danh
+- `payload.contact_missing` — list `<contact_info>`, những người vắng
 
-Mỗi lượt attendance là map:
+`<contact_info>` cùng dạng với entry trong `voting_result.contact` (có `Id`, `Name`,
+`GroupName`, `Street`, `StreetNumber`, `City`...). Attendance **không còn** đọc
+`voting_result.vote.ATTENDANCE` hay `delegate_directory` nữa.
 
-```json
-{
-  "1200": "diemdanh"
-}
-```
+### Vì sao không lấy trực tiếp từ event GENERAL_VOTING_RESULT(ATTENDANCE)
 
-### Vì sao không lấy trực tiếp từ monitor event
-
-Nhánh điểm danh trên monitor event hiện chỉ có summary như:
+Nhánh điểm danh trên `GENERAL_VOTING_RESULT` chỉ có summary:
 
 - `display`
 - `online`
 - `total`
 
-Nó không mang:
-
-- `delegate_id`
-- `delegate_name`
-- `delegate_address`
-
-Nên attendance history hiện phải dựa vào snapshot `voting_result`.
+Nó không mang `delegate_id` / `delegate_name` / `delegate_address`, nên delegate detail
+phải lấy từ `CONTACT_MISSING_EVENT` (`present_delegates` + `contact_missing`).
 
 ### Time attendance lấy từ đâu
 
@@ -489,11 +479,12 @@ curl http://127.0.0.1:8000/history/attendance
 |---|---|
 | `SET_START(display=ATTENDANCE)` | `started_at` |
 | `SET_STOP(display=ATTENDANCE)` | `ended_at` |
-| `voting_result.vote.ATTENDANCE[-1]` | `present[].delegate_id` |
-| `delegate_directory - present` | `missing[]` |
-| `voting_result.contact[id].Name` | `present[].delegate_name`, `missing[].delegate_name` |
-| `voting_result.contact[id].GroupName` | `delegate_group_name` |
-| `voting_result.contact[id].Street/StreetNumber/City` | `delegate_address`, `delegate_street`, `delegate_street_number`, `delegate_city` |
+| `CONTACT_MISSING_EVENT.payload.present_delegates` | `present[]` (kèm `result="diemdanh"`) |
+| `CONTACT_MISSING_EVENT.payload.contact_missing` | `missing[]` |
+| `<contact_info>.Id` | `delegate_id` |
+| `<contact_info>.Name` | `delegate_name` |
+| `<contact_info>.GroupName` | `delegate_group_name` |
+| `<contact_info>.Street/StreetNumber/City` | `delegate_address`, `delegate_street`, `delegate_street_number`, `delegate_city` |
 
 ---
 
@@ -501,11 +492,9 @@ curl http://127.0.0.1:8000/history/attendance
 
 1. Vote time và attendance time hiện là thời điểm listener nhận lifecycle event, không phải timer nội bộ CoCon.
 
-2. Attendance monitor event hiện không mang full delegate detail, nên vẫn phải fallback sang key nguồn `voting_result`.
+2. Attendance history được chốt khi nhận `CONTACT_MISSING_EVENT` (đến sau `SET_STOP(ATTENDANCE)`), không phải ngay lúc `SET_STOP`. Nếu một lượt attendance không có `CONTACT_MISSING_EVENT` theo sau thì session sẽ không được chốt vào history.
 
-3. Nếu `voting_result.contact` chưa cập nhật đúng thời điểm listener refresh directory, history có thể thiếu một phần contact fields.
-
-4. `present` của attendance hiện lấy từ snapshot `vote.ATTENDANCE` mới nhất trong key nguồn, nên phụ thuộc vào việc app `voting/` đã kịp set snapshot đó.
+3. Vote vẫn phụ thuộc `voting_result.contact` để lấy delegate detail; nếu contact chưa cập nhật đúng thời điểm, vote history có thể thiếu một phần contact fields. Attendance thì không, vì lấy trực tiếp từ `present_delegates` / `contact_missing`.
 
 ---
 
