@@ -8,9 +8,11 @@ from redis import Redis
 
 from app.config import (
     ACTIVE_ATTENDANCE_KEY,
+    ACTIVE_DISCUSS_KEY,
     ACTIVE_VOTE_KEY,
     DELEGATE_DIRECTORY_KEY,
     HISTORY_ATTENDANCE_KEY,
+    HISTORY_DISCUSS_KEY,
     HISTORY_REDIS_URL,
     HISTORY_VOTE_KEY,
     MONITOR_CHANNEL,
@@ -21,6 +23,9 @@ from app.redis_client import create_redis_client
 
 log = logging.getLogger("vote_history_listener")
 
+DISCUSS_DISPLAYS = frozenset({"DISCUSS", "CHAT"})
+MIC_STATE_EVENT = "MIC_STATE_CHANGED_IN_RUNNING_MEETING"
+
 
 class VoteHistoryProcessor:
     def __init__(
@@ -30,8 +35,10 @@ class VoteHistoryProcessor:
         source_voting_result_key: str = SOURCE_VOTING_RESULT_KEY,
         history_vote_key: str = HISTORY_VOTE_KEY,
         history_attendance_key: str = HISTORY_ATTENDANCE_KEY,
+        history_discuss_key: str = HISTORY_DISCUSS_KEY,
         active_vote_key: str = ACTIVE_VOTE_KEY,
         active_attendance_key: str = ACTIVE_ATTENDANCE_KEY,
+        active_discuss_key: str = ACTIVE_DISCUSS_KEY,
         delegate_directory_key: str = DELEGATE_DIRECTORY_KEY,
     ) -> None:
         self.source_redis = source_redis
@@ -39,8 +46,10 @@ class VoteHistoryProcessor:
         self.source_voting_result_key = source_voting_result_key
         self.history_vote_key = history_vote_key
         self.history_attendance_key = history_attendance_key
+        self.history_discuss_key = history_discuss_key
         self.active_vote_key = active_vote_key
         self.active_attendance_key = active_attendance_key
+        self.active_discuss_key = active_discuss_key
         self.delegate_directory_key = delegate_directory_key
 
     def handle_event(self, event: dict[str, Any], timestamp: Optional[str] = None) -> None:
@@ -61,23 +70,48 @@ class VoteHistoryProcessor:
             self.start_vote_session(event_time)
             return
 
+        if event_type == "SET_START" and display in DISCUSS_DISPLAYS:
+            self.start_discuss_session(event_time, display=display)
+            return
+
         if event_type == "GENERAL_VOTING_RESULT" and display == "VOTE":
             self.update_vote_results(payload)
             return
 
+        # Voting app now publishes live present/missing on attendance GENERAL_VOTING_RESULT.
+        if event_type == "GENERAL_VOTING_RESULT" and display == "ATTENDANCE":
+            self.update_attendance_snapshot(payload)
+            return
+
+        if event_type == MIC_STATE_EVENT and display in DISCUSS_DISPLAYS:
+            self.update_discuss_state(payload, event_time)
+            return
+
+        # Voting app finalizes attendance on SET_STOP with present_delegates + contact_missing.
         if event_type == "SET_STOP" and display == "ATTENDANCE":
-            self.record_attendance_stopped(event_time)
+            self.finish_attendance_session(payload, ended_at=event_time)
             return
 
         if event_type == "SET_STOP" and display == "VOTE":
             self.finish_vote_session(event_time)
             return
 
-        # Present/missing delegate detail only arrives on CONTACT_MISSING_EVENT,
-        # which the source app emits after SET_STOP(ATTENDANCE). This is where the
-        # attendance session is actually finalized into history.
+        if event_type == "SET_STOP" and display in DISCUSS_DISPLAYS:
+            self.finish_discuss_session(event_time)
+            return
+
+        if event_type == "SET_CLEAR" and display == "ATTENDANCE":
+            self.clear_attendance_session()
+            return
+
+        if event_type == "SET_CLEAR" and display in DISCUSS_DISPLAYS:
+            self.clear_discuss_session()
+            return
+
+        # CONTACT_MISSING screen may re-emit lists (field name: contact_voted).
+        # Only finalize if an active attendance session still exists (e.g. older clients).
         if event_type == "CONTACT_MISSING_EVENT":
-            self.finish_attendance_session(payload)
+            self.finish_attendance_session(payload, ended_at=event_time)
 
     def recover_active_sessions(self, timestamp: Optional[str] = None) -> None:
         recovery_time = timestamp or datetime.now().astimezone().isoformat()
@@ -92,6 +126,11 @@ class VoteHistoryProcessor:
             log.warning("Recovering incomplete attendance session: %s", active_attendance.get("attendance_index"))
             active_attendance.setdefault("ended_at", recovery_time)
             self._finalize_attendance(active_attendance, present=[], missing=[], status="incomplete_recovered")
+
+        active_discuss = self._load_json(self.active_discuss_key)
+        if active_discuss:
+            log.warning("Recovering incomplete discuss session: %s", active_discuss.get("discuss_index"))
+            self.finish_discuss_session(recovery_time, status="incomplete_recovered")
 
     def start_attendance_session(self, started_at: str) -> None:
         history = self._load_attendance_history()
@@ -110,13 +149,94 @@ class VoteHistoryProcessor:
         }
         self._save_json(self.active_vote_key, active_vote)
 
-    def record_attendance_stopped(self, ended_at: str) -> None:
+    def start_discuss_session(self, started_at: str, display: str = "DISCUSS") -> None:
+        history = self._load_discuss_history()
+        active_discuss = {
+            "discuss_index": len(history) + 1,
+            "display": display,
+            "started_at": started_at,
+            "waiting": [],
+            "talking": [],
+            "events": [],
+        }
+        self._save_json(self.active_discuss_key, active_discuss)
+
+    def update_discuss_state(self, payload: dict[str, Any], event_time: str) -> None:
+        active_discuss = self._load_json(self.active_discuss_key)
+        if not active_discuss:
+            return
+
+        waiting = self._normalize_discuss_delegates(
+            payload.get("waiting_delegates"),
+            payload.get("waiting"),
+        )
+        talking = self._normalize_discuss_delegates(
+            payload.get("talking_delegates"),
+            payload.get("talking"),
+        )
+        active_discuss["waiting"] = waiting
+        active_discuss["talking"] = talking
+        events = list(active_discuss.get("events") or [])
+        events.append(
+            {
+                "at": event_time,
+                "state": payload.get("state"),
+                "waiting": waiting,
+                "talking": talking,
+            }
+        )
+        active_discuss["events"] = events
+        self._save_json(self.active_discuss_key, active_discuss)
+
+    def finish_discuss_session(self, ended_at: str, status: Optional[str] = None) -> None:
+        active_discuss = self._load_json(self.active_discuss_key)
+        if not active_discuss:
+            return
+
+        started_at = active_discuss["started_at"]
+        history_item = {
+            "discuss_index": active_discuss["discuss_index"],
+            "display": active_discuss.get("display", "DISCUSS"),
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": self._duration_seconds(started_at, ended_at),
+            "waiting": active_discuss.get("waiting") or [],
+            "talking": active_discuss.get("talking") or [],
+            "events": active_discuss.get("events") or [],
+        }
+        if status:
+            history_item["status"] = status
+
+        history = self._load_discuss_history()
+        history.append(history_item)
+        self._save_json(self.history_discuss_key, history)
+        self.history_redis.delete(self.active_discuss_key)
+
+    def clear_discuss_session(self) -> None:
+        """SET_CLEAR(display=DISCUSS|CHAT): drop active + completed discuss history."""
+        self.history_redis.delete(self.active_discuss_key)
+        self.history_redis.delete(self.history_discuss_key)
+
+    def update_attendance_snapshot(self, payload: dict[str, Any]) -> None:
+        """Store latest present/missing while attendance is running (from voting app)."""
         active_attendance = self._load_json(self.active_attendance_key)
         if not active_attendance:
             return
 
-        active_attendance["ended_at"] = ended_at
+        present_delegates, contact_missing = self._extract_attendance_lists(payload)
+        if present_delegates is None and contact_missing is None:
+            return
+
+        if present_delegates is not None:
+            active_attendance["present_delegates"] = present_delegates
+        if contact_missing is not None:
+            active_attendance["contact_missing"] = contact_missing
         self._save_json(self.active_attendance_key, active_attendance)
+
+    def clear_attendance_session(self) -> None:
+        """SET_CLEAR(display=ATTENDANCE): drop active + completed attendance history."""
+        self.history_redis.delete(self.active_attendance_key)
+        self.history_redis.delete(self.history_attendance_key)
 
     def update_vote_results(self, payload: dict[str, Any]) -> None:
         active_vote = self._load_json(self.active_vote_key)
@@ -165,25 +285,49 @@ class VoteHistoryProcessor:
         self._save_json(self.history_vote_key, history)
         self.history_redis.delete(self.active_vote_key)
 
-    def finish_attendance_session(self, payload: dict[str, Any], status: Optional[str] = None) -> None:
+    def finish_attendance_session(
+        self,
+        payload: dict[str, Any],
+        ended_at: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> None:
         active_attendance = self._load_json(self.active_attendance_key)
         if not active_attendance:
             return
 
-        present_delegates = payload.get("present_delegates") or {}
-        contact_missing = payload.get("contact_missing") or []
+        payload_present, payload_missing = self._extract_attendance_lists(payload)
+        # Prefer payload from voting (SET_STOP / CONTACT_MISSING / live snapshot),
+        # fall back to values cached on the active session during GENERAL_VOTING_RESULT.
+        present_delegates = (
+            payload_present
+            if payload_present is not None
+            else active_attendance.get("present_delegates") or {}
+        )
+        contact_missing = (
+            payload_missing
+            if payload_missing is not None
+            else active_attendance.get("contact_missing") or []
+        )
 
         present = sorted(
             (
                 {**self._contact_to_record(contact, fallback_id=contact_id), "result": "diemdanh"}
                 for contact_id, contact in present_delegates.items()
+                if isinstance(contact, dict)
             ),
             key=lambda record: record["delegate_id"],
         )
         missing = sorted(
-            (self._contact_to_record(contact) for contact in contact_missing),
+            (
+                self._contact_to_record(contact)
+                for contact in contact_missing
+                if isinstance(contact, dict)
+            ),
             key=lambda record: record["delegate_id"],
         )
+
+        if ended_at:
+            active_attendance["ended_at"] = ended_at
 
         self._finalize_attendance(active_attendance, present, missing, status)
 
@@ -212,6 +356,32 @@ class VoteHistoryProcessor:
         self._save_json(self.history_attendance_key, history)
         self.history_redis.delete(self.active_attendance_key)
 
+    @staticmethod
+    def _extract_attendance_lists(
+        payload: dict[str, Any],
+    ) -> tuple[Optional[dict[str, Any]], Optional[list[Any]]]:
+        """Read present/missing from voting monitor payloads.
+
+        Voting uses:
+        - present_delegates on SET_START / SET_STOP / GENERAL_VOTING_RESULT(ATTENDANCE)
+        - contact_voted on CONTACT_MISSING_EVENT (legacy alias)
+        - contact_missing list in all of the above
+        """
+        present = payload.get("present_delegates")
+        if present is None and "contact_voted" in payload:
+            present = payload.get("contact_voted")
+        if present is not None and not isinstance(present, dict):
+            present = {}
+
+        missing = payload.get("contact_missing")
+        if missing is not None and not isinstance(missing, list):
+            missing = []
+
+        # Distinguish "field absent" vs "field present but empty"
+        present_out = present if ("present_delegates" in payload or "contact_voted" in payload) else None
+        missing_out = missing if "contact_missing" in payload else None
+        return present_out, missing_out
+
     def refresh_delegate_directory(self) -> None:
         source_payload = self.source_redis.get(self.source_voting_result_key)
         if source_payload is None:
@@ -230,6 +400,9 @@ class VoteHistoryProcessor:
 
     def _load_attendance_history(self) -> list[dict[str, Any]]:
         return self._load_json(self.history_attendance_key) or []
+
+    def _load_discuss_history(self) -> list[dict[str, Any]]:
+        return self._load_json(self.history_discuss_key) or []
 
     def _load_json(self, key: str) -> Any:
         payload = self.history_redis.get(key)
@@ -298,6 +471,45 @@ class VoteHistoryProcessor:
             **self._build_delegate_record({"delegate_id": delegate_id, **delegate}),
             "result": result,
         }
+
+    @classmethod
+    def _normalize_discuss_delegates(
+        cls,
+        structured: Any,
+        raw_entries: Any,
+    ) -> list[dict[str, Any]]:
+        if isinstance(structured, list) and structured:
+            normalized = []
+            for item in structured:
+                if not isinstance(item, dict):
+                    continue
+                delegate_id = item.get("id", item.get("delegate_id"))
+                display = item.get("display") or item.get("delegate_name") or ""
+                try:
+                    parsed_id = int(delegate_id) if delegate_id is not None else None
+                except (TypeError, ValueError):
+                    parsed_id = delegate_id
+                normalized.append({"delegate_id": parsed_id, "display": display})
+            return normalized
+
+        if not isinstance(raw_entries, list):
+            return []
+
+        result = []
+        for entry in raw_entries:
+            result.append(cls._parse_discuss_entry(entry))
+        return result
+
+    @staticmethod
+    def _parse_discuss_entry(entry: Any) -> dict[str, Any]:
+        if not isinstance(entry, str) or "*/*" not in entry:
+            return {"delegate_id": None, "display": entry if entry is not None else ""}
+        delegate_id, display = entry.split("*/*", 1)
+        try:
+            parsed_id = int(delegate_id)
+        except (TypeError, ValueError):
+            parsed_id = delegate_id
+        return {"delegate_id": parsed_id, "display": display}
 
 
 def process_pubsub_message(processor: VoteHistoryProcessor, payload: str) -> bool:

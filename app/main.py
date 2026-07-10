@@ -5,7 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import CORS_ALLOW_ORIGINS, HISTORY_REDIS_URL
 from app.redis_client import create_redis_client
-from app.vote_history_api import load_attendance_history, load_vote_history
+from app.vote_history_api import (
+    load_attendance_history,
+    load_discuss_history,
+    load_vote_history,
+)
 
 
 def create_app(history_redis_client: Optional[Any] = None) -> FastAPI:
@@ -30,6 +34,10 @@ def create_app(history_redis_client: Optional[Any] = None) -> FastAPI:
     @app.get("/history/attendance")
     def get_attendance_history() -> list[dict[str, Any]]:
         return load_attendance_history(app.state.history_redis_client)
+
+    @app.get("/history/discuss")
+    def get_discuss_history() -> list[dict[str, Any]]:
+        return load_discuss_history(app.state.history_redis_client)
 
     return app
 

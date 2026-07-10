@@ -1,6 +1,6 @@
 # Voting API
 
-Python API và listener để dựng lịch sử `vote` và `attendance` từ app `voting`.
+Python API và listener để dựng lịch sử `vote`, `attendance` và `discuss` từ app `voting`.
 
 ## Mục tiêu
 
@@ -16,6 +16,7 @@ Luồng chính:
 
 - `GET /history/vote`
 - `GET /history/attendance`
+- `GET /history/discuss`
 
 Chi tiết response và mapping dữ liệu xem tại:
 
@@ -56,8 +57,10 @@ Các biến môi trường hỗ trợ:
 - `SOURCE_VOTING_RESULT_KEY`
 - `HISTORY_VOTE_KEY`
 - `HISTORY_ATTENDANCE_KEY`
+- `HISTORY_DISCUSS_KEY`
 - `ACTIVE_VOTE_KEY`
 - `ACTIVE_ATTENDANCE_KEY`
+- `ACTIVE_DISCUSS_KEY`
 - `DELEGATE_DIRECTORY_KEY`
 - `MONITOR_CHANNEL`
 
@@ -77,8 +80,9 @@ python3 -m app.vote_history_listener
 Listener sẽ:
 
 - listen `MONITOR_CHANNEL`
-- lấy lifecycle event cho `VOTE` và `ATTENDANCE`
-- đọc thêm snapshot `voting_result`
+- lấy lifecycle event cho `VOTE`, `ATTENDANCE` và `DISCUSS`
+- theo dõi mic events cho thảo luận (`waiting` / `talking`)
+- đọc thêm snapshot `voting_result` (vote/attendance enrich)
 - ghi dữ liệu history sang history Redis DB
 
 ## Chạy API
@@ -91,6 +95,7 @@ Truy cập:
 
 - `http://127.0.0.1:8000/history/vote`
 - `http://127.0.0.1:8000/history/attendance`
+- `http://127.0.0.1:8000/history/discuss`
 - `http://127.0.0.1:8000/docs`
 
 ## Chạy bằng Docker Desktop
@@ -135,6 +140,6 @@ python3 -m compileall app tests
 ## Ghi chú
 
 - `/history/vote` lấy `time` từ monitor events và enrich delegate data từ `voting_result.contact`
-- `/history/attendance` lấy `time` từ monitor events (`SET_START`/`SET_STOP`), còn `present`/`missing` (kèm delegate detail) lấy từ `CONTACT_MISSING_EVENT` (`payload.present_delegates` + `payload.contact_missing`); session được chốt khi nhận event này
+- `/history/attendance` lấy `time` từ `SET_START`/`SET_STOP`, còn `present`/`missing` lấy từ payload `SET_STOP(ATTENDANCE)` (`present_delegates` + `contact_missing`); live cache từ `GENERAL_VOTING_RESULT(ATTENDANCE)`; fallback `CONTACT_MISSING_EVENT.contact_voted`
 - `delegate_address` là địa chỉ thật ghép từ `Street`, `StreetNumber`, `City`
 - `delegate_group_name` được giữ riêng, không nhét vào `delegate_address`

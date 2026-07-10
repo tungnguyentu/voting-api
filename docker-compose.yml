@@ -11,8 +11,10 @@ services:
       SOURCE_VOTING_RESULT_KEY: ${SOURCE_VOTING_RESULT_KEY:-voting_result}
       HISTORY_VOTE_KEY: ${HISTORY_VOTE_KEY:-vote_history}
       HISTORY_ATTENDANCE_KEY: ${HISTORY_ATTENDANCE_KEY:-attendance_history}
+      HISTORY_DISCUSS_KEY: ${HISTORY_DISCUSS_KEY:-discuss_history}
       ACTIVE_VOTE_KEY: ${ACTIVE_VOTE_KEY:-vote_history_active}
       ACTIVE_ATTENDANCE_KEY: ${ACTIVE_ATTENDANCE_KEY:-attendance_history_active}
+      ACTIVE_DISCUSS_KEY: ${ACTIVE_DISCUSS_KEY:-discuss_history_active}
       DELEGATE_DIRECTORY_KEY: ${DELEGATE_DIRECTORY_KEY:-delegate_directory}
       MONITOR_CHANNEL: ${MONITOR_CHANNEL:-voting_monitor_channel_6}
     restart: unless-stopped
@@ -28,8 +30,10 @@ services:
       SOURCE_VOTING_RESULT_KEY: ${SOURCE_VOTING_RESULT_KEY:-voting_result}
       HISTORY_VOTE_KEY: ${HISTORY_VOTE_KEY:-vote_history}
       HISTORY_ATTENDANCE_KEY: ${HISTORY_ATTENDANCE_KEY:-attendance_history}
+      HISTORY_DISCUSS_KEY: ${HISTORY_DISCUSS_KEY:-discuss_history}
       ACTIVE_VOTE_KEY: ${ACTIVE_VOTE_KEY:-vote_history_active}
       ACTIVE_ATTENDANCE_KEY: ${ACTIVE_ATTENDANCE_KEY:-attendance_history_active}
+      ACTIVE_DISCUSS_KEY: ${ACTIVE_DISCUSS_KEY:-discuss_history_active}
       DELEGATE_DIRECTORY_KEY: ${DELEGATE_DIRECTORY_KEY:-delegate_directory}
       MONITOR_CHANNEL: ${MONITOR_CHANNEL:-voting_monitor_channel_6}
     restart: unless-stopped

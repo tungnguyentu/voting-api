@@ -112,19 +112,42 @@ def test_vote_history_processor_builds_history_with_vote_times_and_contact_fallb
     ]
 
 
-def test_attendance_history_built_from_contact_missing_event() -> None:
-    # Attendance present/missing are taken from the CONTACT_MISSING_EVENT payload,
-    # which the source app emits after SET_STOP(ATTENDANCE). The monitor
-    # GENERAL_VOTING_RESULT(ATTENDANCE) events only carry online/total counts, and
-    # the voting_result snapshot is no longer consulted for attendance.
+def test_attendance_history_finalized_on_set_stop_with_present_and_missing() -> None:
+    # Matches voting app: SET_STOP(ATTENDANCE) payload carries present_delegates + contact_missing.
+    # Live GENERAL_VOTING_RESULT also publishes those lists (cached if needed).
     source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
     history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
     processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
 
+    present = {
+        "1200": {
+            "Id": 1200,
+            "Name": "Nguyen Duy Chinh",
+            "GroupName": "10. Don Vi Bau Cu So 10",
+            "Street": "",
+            "StreetNumber": "",
+            "City": "",
+        }
+    }
+    missing = [
+        {
+            "Id": 1103,
+            "Name": "Bui Tuan Anh",
+            "GroupName": "06. Don Vi Bau Cu So 6",
+            "Street": "12 Tran Hung Dao",
+            "StreetNumber": "",
+            "City": "Ha Noi",
+        }
+    ]
+
     processor.handle_event(
         {
             "event_type": "SET_START",
-            "payload": {"display": "ATTENDANCE"},
+            "payload": {
+                "display": "ATTENDANCE",
+                "present_delegates": {},
+                "contact_missing": missing + list(present.values()),
+            },
         },
         timestamp="2026-07-09T10:15:03+07:00",
     )
@@ -135,6 +158,8 @@ def test_attendance_history_built_from_contact_missing_event() -> None:
                 "display": "ATTENDANCE",
                 "online": 1,
                 "total": 2,
+                "present_delegates": present,
+                "contact_missing": missing,
             },
         },
         timestamp="2026-07-09T10:15:20+07:00",
@@ -142,38 +167,13 @@ def test_attendance_history_built_from_contact_missing_event() -> None:
     processor.handle_event(
         {
             "event_type": "SET_STOP",
-            "payload": {"display": "ATTENDANCE"},
-        },
-        timestamp="2026-07-09T10:16:22+07:00",
-    )
-    processor.handle_event(
-        {
-            "event_type": "CONTACT_MISSING_EVENT",
             "payload": {
-                "display": "CONTACT_MISSING",
-                "present_delegates": {
-                    "1200": {
-                        "Id": 1200,
-                        "Name": "Nguyen Duy Chinh",
-                        "GroupName": "10. Don Vi Bau Cu So 10",
-                        "Street": "",
-                        "StreetNumber": "",
-                        "City": "",
-                    }
-                },
-                "contact_missing": [
-                    {
-                        "Id": 1103,
-                        "Name": "Bui Tuan Anh",
-                        "GroupName": "06. Don Vi Bau Cu So 6",
-                        "Street": "12 Tran Hung Dao",
-                        "StreetNumber": "",
-                        "City": "Ha Noi",
-                    }
-                ],
+                "display": "ATTENDANCE",
+                "present_delegates": present,
+                "contact_missing": missing,
             },
         },
-        timestamp="2026-07-09T10:16:25+07:00",
+        timestamp="2026-07-09T10:16:22+07:00",
     )
 
     stored_history = json.loads(history_redis.get("attendance_history"))
@@ -209,6 +209,85 @@ def test_attendance_history_built_from_contact_missing_event() -> None:
             ],
         }
     ]
+    assert history_redis.get("attendance_history_active") is None
+
+
+def test_attendance_history_accepts_contact_voted_alias_from_contact_missing_event() -> None:
+    # CONTACT_MISSING_EVENT from voting uses contact_voted (not present_delegates).
+    source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
+
+    processor.handle_event(
+        {"event_type": "SET_START", "payload": {"display": "ATTENDANCE"}},
+        timestamp="2026-07-09T10:15:03+07:00",
+    )
+    processor.handle_event(
+        {
+            "event_type": "CONTACT_MISSING_EVENT",
+            "payload": {
+                "display": "CONTACT_MISSING",
+                "contact_voted": {
+                    "1200": {
+                        "Id": 1200,
+                        "Name": "Nguyen Duy Chinh",
+                        "GroupName": "10. Don Vi Bau Cu So 10",
+                        "Street": "",
+                        "StreetNumber": "",
+                        "City": "",
+                    }
+                },
+                "contact_missing": [
+                    {
+                        "Id": 1103,
+                        "Name": "Bui Tuan Anh",
+                        "GroupName": "06. Don Vi Bau Cu So 6",
+                        "Street": "12 Tran Hung Dao",
+                        "StreetNumber": "",
+                        "City": "Ha Noi",
+                    }
+                ],
+            },
+        },
+        timestamp="2026-07-09T10:16:22+07:00",
+    )
+
+    stored_history = json.loads(history_redis.get("attendance_history"))
+    assert stored_history[0]["present"][0]["delegate_id"] == 1200
+    assert stored_history[0]["missing"][0]["delegate_id"] == 1103
+    assert history_redis.get("attendance_history_active") is None
+
+
+def test_attendance_set_clear_discards_active_and_completed_history() -> None:
+    source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis.set(
+        "attendance_history",
+        json.dumps(
+            [
+                {
+                    "attendance_index": 1,
+                    "started_at": "2026-07-09T10:15:03+07:00",
+                    "ended_at": "2026-07-09T10:16:22+07:00",
+                    "duration_seconds": 79,
+                    "present": [],
+                    "missing": [],
+                }
+            ]
+        ),
+    )
+    processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
+
+    processor.handle_event(
+        {"event_type": "SET_START", "payload": {"display": "ATTENDANCE"}},
+        timestamp="2026-07-09T11:00:00+07:00",
+    )
+    processor.handle_event(
+        {"event_type": "SET_CLEAR", "payload": {"display": "ATTENDANCE"}},
+    )
+
+    assert history_redis.get("attendance_history_active") is None
+    assert history_redis.get("attendance_history") is None
 
 
 def test_processor_recovers_incomplete_vote_session_on_startup() -> None:
@@ -271,6 +350,93 @@ def test_processor_recovers_incomplete_vote_session_on_startup() -> None:
         }
     ]
     assert history_redis.get("vote_history_active") is None
+
+
+def test_discuss_history_processor_tracks_waiting_and_talking() -> None:
+    source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
+
+    processor.handle_event(
+        {"event_type": "SET_START", "payload": {"display": "DISCUSS"}},
+        timestamp="2026-07-09T14:00:00+07:00",
+    )
+    processor.handle_event(
+        {
+            "event_type": "MIC_STATE_CHANGED_IN_RUNNING_MEETING",
+            "payload": {
+                "display": "DISCUSS",
+                "state": "On",
+                "waiting": ["1103*/*Bui Tuan Anh"],
+                "talking": ["1200*/*Nguyen Duy Chinh"],
+                "waiting_delegates": [{"id": 1103, "display": "Bui Tuan Anh"}],
+                "talking_delegates": [{"id": 1200, "display": "Nguyen Duy Chinh"}],
+            },
+        },
+        timestamp="2026-07-09T14:01:00+07:00",
+    )
+    processor.handle_event(
+        {"event_type": "SET_STOP", "payload": {"display": "DISCUSS"}},
+        timestamp="2026-07-09T14:10:00+07:00",
+    )
+
+    stored_history = json.loads(history_redis.get("discuss_history"))
+    assert stored_history == [
+        {
+            "discuss_index": 1,
+            "display": "DISCUSS",
+            "started_at": "2026-07-09T14:00:00+07:00",
+            "ended_at": "2026-07-09T14:10:00+07:00",
+            "duration_seconds": 600,
+            "waiting": [{"delegate_id": 1103, "display": "Bui Tuan Anh"}],
+            "talking": [{"delegate_id": 1200, "display": "Nguyen Duy Chinh"}],
+            "events": [
+                {
+                    "at": "2026-07-09T14:01:00+07:00",
+                    "state": "On",
+                    "waiting": [{"delegate_id": 1103, "display": "Bui Tuan Anh"}],
+                    "talking": [{"delegate_id": 1200, "display": "Nguyen Duy Chinh"}],
+                }
+            ],
+        }
+    ]
+    assert history_redis.get("discuss_history_active") is None
+
+
+def test_discuss_set_clear_discards_active_and_completed_history() -> None:
+    source_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+    history_redis.set(
+        "discuss_history",
+        json.dumps(
+            [
+                {
+                    "discuss_index": 1,
+                    "display": "DISCUSS",
+                    "started_at": "2026-07-09T14:00:00+07:00",
+                    "ended_at": "2026-07-09T14:10:00+07:00",
+                    "duration_seconds": 600,
+                    "waiting": [],
+                    "talking": [],
+                    "events": [],
+                }
+            ]
+        ),
+    )
+    processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
+
+    processor.handle_event(
+        {"event_type": "SET_START", "payload": {"display": "DISCUSS"}},
+        timestamp="2026-07-09T15:00:00+07:00",
+    )
+    assert history_redis.get("discuss_history_active") is not None
+
+    processor.handle_event(
+        {"event_type": "SET_CLEAR", "payload": {"display": "DISCUSS"}},
+    )
+
+    assert history_redis.get("discuss_history_active") is None
+    assert history_redis.get("discuss_history") is None
 
 
 def test_process_pubsub_message_ignores_invalid_json_and_logs_error(caplog) -> None:
