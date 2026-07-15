@@ -166,7 +166,7 @@ docker compose exec listener python -c "from redis import Redis; print(Redis.fro
 
 Phải in `True`.
 
-#### Nếu vẫn timeout
+#### Nếu vẫn timeout / lỗi connect
 
 | Check | Action |
 |---|---|
@@ -174,6 +174,7 @@ Phải in `True`.
 | Windows không thấy port 6379 | Restart WSL: `wsl --shutdown`, start Redis lại |
 | Docker Desktop cũ | Bật **WSL2 integration** cho distro đang chạy Redis |
 | Redis remote LAN từ WSL (không local) | Container vẫn khó VPN; chạy listener trên host hoặc Linux `docker-compose.host.yml` |
+| `unknown command HELLO` | Redis cũ + redis-py mới. Code dùng `protocol=2` (RESP2). **Rebuild image**: `docker compose up -d --build` |
 
 Service được tạo:
 

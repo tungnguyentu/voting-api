@@ -51,6 +51,9 @@ def create_redis_client(url: str, decode_responses: bool = True, **overrides: An
         "health_check_interval": 30,
         "retry": Retry(ExponentialBackoff(base=0.5, cap=5), 5),
         "retry_on_error": [RedisConnectionError, RedisTimeoutError],
+        # redis-py 5+/6 defaults to RESP3 (HELLO 3). Older Redis (common in WSL
+        # packages) does not support HELLO → "unknown command `HELLO`".
+        "protocol": 2,
     }
     options.update(overrides)
     return Redis.from_url(url, **options)
@@ -64,9 +67,18 @@ def ping_redis(client: Redis, label: str = "redis") -> None:
     try:
         ping()
     except Exception as exc:
+        detail = str(exc)
+        if "HELLO" in detail.upper():
+            hint = (
+                "Redis server rejected RESP3 HELLO (often older Redis). "
+                "Client uses protocol=2; rebuild the Docker image if this persists."
+            )
+        else:
+            hint = (
+                "If running in Docker Desktop + Redis in WSL, use "
+                "redis://host.docker.internal:6379/0 and bind Redis to 0.0.0.0 "
+                "(see README)."
+            )
         raise ConnectionError(
-            f"Cannot reach {label}. "
-            f"If running in Docker, the container may not route to Redis the same way "
-            f"as host uvicorn/python. Check SOURCE_REDIS_URL / HISTORY_REDIS_URL and "
-            f"Docker networking (see README). Underlying error: {exc}"
+            f"Cannot reach {label}. {hint} Underlying error: {exc}"
         ) from exc
