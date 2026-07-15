@@ -88,15 +88,15 @@ Listener sẽ:
 ## Chạy API
 
 ```bash
-python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 52999 --reload
 ```
 
 Truy cập:
 
-- `http://127.0.0.1:8000/history/vote`
-- `http://127.0.0.1:8000/history/attendance`
-- `http://127.0.0.1:8000/history/discuss`
-- `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:52999/history/vote`
+- `http://127.0.0.1:52999/history/attendance`
+- `http://127.0.0.1:52999/history/discuss`
+- `http://127.0.0.1:52999/docs`
 
 ## Chạy bằng Docker Desktop
 
@@ -212,7 +212,7 @@ Phải in `True`.
 
 Service được tạo:
 
-- `api`: FastAPI trên cổng `8000`
+- `api`: FastAPI trên cổng `52999`
 - `listener`: process listen monitor channel và ghi history
 
 Dừng:

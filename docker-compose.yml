@@ -12,7 +12,7 @@ services:
       context: .
     container_name: voting-api
     ports:
-      - "8000:8000"
+      - "52999:52999"
     extra_hosts:
       # Docker Desktop: reach Windows host / WSL-forwarded localhost ports
       - "host.docker.internal:host-gateway"

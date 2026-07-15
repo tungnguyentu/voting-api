@@ -523,9 +523,9 @@ python3 -m uvicorn app.main:app --reload
 ### 3. Gọi API
 
 ```bash
-curl http://127.0.0.1:8000/history/vote
-curl http://127.0.0.1:8000/history/attendance
-curl http://127.0.0.1:8000/history/discuss
+curl http://127.0.0.1:52999/history/vote
+curl http://127.0.0.1:52999/history/attendance
+curl http://127.0.0.1:52999/history/discuss
 ```
 
 ---

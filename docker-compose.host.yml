@@ -4,7 +4,7 @@
 # Usage (instead of docker-compose.yml):
 #   docker compose -f docker-compose.host.yml up -d --build
 #
-# API: http://localhost:8000  (binds on host network)
+# API: http://localhost:52999  (binds on host network)
 
 services:
   api:
