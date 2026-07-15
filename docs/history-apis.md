@@ -2,12 +2,13 @@
 
 ## Mục tiêu
 
-Tài liệu này mô tả 2 API:
+Tài liệu này mô tả 3 API:
 
 - `GET /history/vote`
 - `GET /history/attendance`
+- `GET /history/discuss`
 
-Hai API này không đọc trực tiếp toàn bộ dữ liệu thô từ app `voting/` tại thời điểm request. Thay vào đó:
+Các API này không đọc trực tiếp toàn bộ dữ liệu thô từ app `voting/` tại thời điểm request. Thay vào đó:
 
 1. Một listener riêng subscribe Redis monitor channel do app `voting/` publish.
 2. Listener chuẩn hóa dữ liệu lịch sử và lưu sang một Redis DB riêng cho history.
@@ -97,10 +98,14 @@ Các key chính:
 - mặc định: `vote_history`
 - `HISTORY_ATTENDANCE_KEY`
 - mặc định: `attendance_history`
+- `HISTORY_DISCUSS_KEY`
+- mặc định: `discuss_history`
 - `ACTIVE_VOTE_KEY`
 - mặc định: `vote_history_active`
 - `ACTIVE_ATTENDANCE_KEY`
 - mặc định: `attendance_history_active`
+- `ACTIVE_DISCUSS_KEY`
+- mặc định: `discuss_history_active`
 - `DELEGATE_DIRECTORY_KEY`
 - mặc định: `delegate_directory`
 
@@ -260,6 +265,15 @@ Hiện tại time được suy ra từ:
 - `ended_at`: lúc listener nhận `SET_STOP` cho `display=VOTE`
 - `duration_seconds`: hiệu số giữa `ended_at` và `started_at`
 
+### Live vs completed
+
+Listener **upsert** session vào `vote_history` liên tục:
+
+- `SET_START` / live results → `status: "in_progress"`, `ended_at: null`
+- `SET_STOP` → cùng `vote_index` được cập nhật, có `ended_at` / `duration_seconds`, bỏ `status` (hoặc status recover)
+
+API `GET /history/vote` đọc key history nên **thấy data ngay khi đang vote**, không cần chờ Stop.
+
 ### Response mẫu
 
 ```json
@@ -301,12 +315,10 @@ Hiện tại time được suy ra từ:
 
 ### Khi key chưa tồn tại
 
-API trả:
+API trả **200** với list rỗng:
 
 ```json
-{
-  "detail": "Redis key 'vote_history' was not found."
-}
+[]
 ```
 
 ---
@@ -323,57 +335,36 @@ Trả lịch sử điểm danh theo từng lượt, gồm:
 
 ### Cách dữ liệu được tạo
 
-Listener xử lý như sau:
+Listener xử lý như sau (khớp app `voting/` hiện tại):
 
-1. Nhận `SET_START` với `display=ATTENDANCE`
-2. Tạo active attendance session mới
-3. Nhận `GENERAL_VOTING_RESULT` với `display=ATTENDANCE`
-4. Không dùng payload event để lấy delegate detail
-5. Đọc snapshot `vote.ATTENDANCE` mới nhất từ key nguồn `voting_result`
-6. Xác định `present_delegate_ids`
-7. Nhận `SET_STOP` với `display=ATTENDANCE`
-8. Refresh delegate directory
-9. Build danh sách `present`
-10. Build danh sách `missing = toàn bộ delegates - present`
-11. Append vào key `attendance_history`
+1. Nhận `SET_START` với `display=ATTENDANCE` → tạo active session (`started_at`)
+2. Nhận `GENERAL_VOTING_RESULT` với `display=ATTENDANCE` → cache live `present_delegates` + `contact_missing` (nếu có)
+3. Nhận `SET_STOP` với `display=ATTENDANCE` → **chốt history** từ payload:
+   - `present` ← `payload.present_delegates`
+   - `missing` ← `payload.contact_missing`
+   - `ended_at` ← thời điểm nhận event
+4. Nhận `SET_CLEAR` với `display=ATTENDANCE` → xóa active + toàn bộ `attendance_history`
+5. (Fallback) `CONTACT_MISSING_EVENT` nếu active session còn mở — dùng `present_delegates` hoặc alias `contact_voted`
 
 ### Dữ liệu attendance lấy từ đâu
 
-Nguồn chính để xác định ai đã điểm danh:
+Nguồn chính từ **monitor events** do app `voting/` publish (không phụ thuộc mở màn CONTACT_MISSING):
 
-- `voting_result.vote.ATTENDANCE`
+| Event | Fields |
+|---|---|
+| `SET_START(ATTENDANCE)` | `present_delegates`, `contact_missing` (thường rỗng/all) |
+| `GENERAL_VOTING_RESULT(ATTENDANCE)` | `present_delegates`, `contact_missing`, `online`, `total` |
+| `SET_STOP(ATTENDANCE)` | `present_delegates`, `contact_missing` — **chốt history** |
+| `SET_CLEAR(ATTENDANCE)` | snapshot lists + xóa data màn |
+| `CONTACT_MISSING_EVENT` | `contact_voted` (= present), `contact_missing` — fallback |
 
-Mỗi lượt attendance là map:
-
-```json
-{
-  "1200": "diemdanh"
-}
-```
-
-### Vì sao không lấy trực tiếp từ monitor event
-
-Nhánh điểm danh trên monitor event hiện chỉ có summary như:
-
-- `display`
-- `online`
-- `total`
-
-Nó không mang:
-
-- `delegate_id`
-- `delegate_name`
-- `delegate_address`
-
-Nên attendance history hiện phải dựa vào snapshot `voting_result`.
+App `voting/` cũng ghi snapshot Redis key `attendance_result` (source DB); listener history **ưu tiên monitor payload**.
 
 ### Time attendance lấy từ đâu
 
-Từ monitor lifecycle:
-
-- `started_at`: lúc nhận `SET_START` cho `display=ATTENDANCE`
-- `ended_at`: lúc nhận `SET_STOP` cho `display=ATTENDANCE`
-- `duration_seconds`: hiệu số giữa `ended_at` và `started_at`
+- `started_at`: `SET_START(display=ATTENDANCE)`
+- `ended_at`: `SET_STOP(display=ATTENDANCE)` (hoặc timestamp `CONTACT_MISSING_EVENT` nếu fallback)
+- `duration_seconds`: hiệu số `ended_at - started_at`
 
 ### Response mẫu
 
@@ -417,12 +408,81 @@ Từ monitor lifecycle:
 
 ### Khi key chưa tồn tại
 
-API trả:
+API trả **200** với list rỗng:
 
 ```json
-{
-  "detail": "Redis key 'attendance_history' was not found."
-}
+[]
+```
+
+---
+
+## API 3: `GET /history/discuss`
+
+### Mục đích
+
+Trả lịch sử thảo luận theo từng phiên, gồm:
+
+- danh sách `waiting` (đang chờ phát biểu)
+- danh sách `talking` (đang phát biểu)
+- timeline `events` khi mic đổi trạng thái
+- thời gian bắt đầu/kết thúc
+
+### Cách dữ liệu được tạo
+
+Listener xử lý như sau:
+
+1. Nhận `SET_START` với `display=DISCUSS` (hoặc `CHAT`)
+2. Tạo active discuss session
+3. Nhận `MIC_STATE_CHANGED_IN_RUNNING_MEETING` → cập nhật `waiting`/`talking` và append event
+4. Nhận `SET_STOP` với `display=DISCUSS` → chốt `ended_at`, append vào `discuss_history`
+5. Nhận `SET_CLEAR` với `display=DISCUSS` → xóa active + toàn bộ `discuss_history`
+
+### Dữ liệu discuss lấy từ đâu
+
+Từ monitor event mic:
+
+- `payload.waiting` / `payload.talking` (chuỗi `"id*/*display"`)
+- `payload.waiting_delegates` / `payload.talking_delegates` (ưu tiên nếu có)
+- `payload.state` (`Request` / `On` / `Off` / `MicResetEvent`)
+
+### Response mẫu
+
+```json
+[
+  {
+    "discuss_index": 1,
+    "display": "DISCUSS",
+    "started_at": "2026-07-09T14:00:00+07:00",
+    "ended_at": "2026-07-09T14:10:00+07:00",
+    "duration_seconds": 600,
+    "waiting": [
+      {"delegate_id": 1103, "display": "Bui Tuan Anh"}
+    ],
+    "talking": [
+      {"delegate_id": 1200, "display": "Nguyen Duy Chinh"}
+    ],
+    "events": [
+      {
+        "at": "2026-07-09T14:01:00+07:00",
+        "state": "On",
+        "waiting": [{"delegate_id": 1103, "display": "Bui Tuan Anh"}],
+        "talking": [{"delegate_id": 1200, "display": "Nguyen Duy Chinh"}]
+      }
+    ]
+  }
+]
+```
+
+### Redis key API đọc
+
+- `discuss_history`
+
+### Khi key chưa tồn tại
+
+API trả **200** với list rỗng:
+
+```json
+[]
 ```
 
 ---
@@ -448,7 +508,7 @@ Listener hiện đã có:
 - `try/except` cho từng message
 - validate monitor payload trước khi xử lý
 - reconnect loop với exponential backoff khi Redis/pubsub lỗi
-- recovery cho `vote_history_active` và `attendance_history_active`
+- recovery cho `vote_history_active`, `attendance_history_active` và `discuss_history_active`
 
 Khi recover active session dang dở, listener sẽ chốt session đó vào history với:
 
@@ -465,6 +525,7 @@ python3 -m uvicorn app.main:app --reload
 ```bash
 curl http://127.0.0.1:8000/history/vote
 curl http://127.0.0.1:8000/history/attendance
+curl http://127.0.0.1:8000/history/discuss
 ```
 
 ---
@@ -489,11 +550,12 @@ curl http://127.0.0.1:8000/history/attendance
 |---|---|
 | `SET_START(display=ATTENDANCE)` | `started_at` |
 | `SET_STOP(display=ATTENDANCE)` | `ended_at` |
-| `voting_result.vote.ATTENDANCE[-1]` | `present[].delegate_id` |
-| `delegate_directory - present` | `missing[]` |
-| `voting_result.contact[id].Name` | `present[].delegate_name`, `missing[].delegate_name` |
-| `voting_result.contact[id].GroupName` | `delegate_group_name` |
-| `voting_result.contact[id].Street/StreetNumber/City` | `delegate_address`, `delegate_street`, `delegate_street_number`, `delegate_city` |
+| `CONTACT_MISSING_EVENT.payload.present_delegates` | `present[]` (kèm `result="diemdanh"`) |
+| `CONTACT_MISSING_EVENT.payload.contact_missing` | `missing[]` |
+| `<contact_info>.Id` | `delegate_id` |
+| `<contact_info>.Name` | `delegate_name` |
+| `<contact_info>.GroupName` | `delegate_group_name` |
+| `<contact_info>.Street/StreetNumber/City` | `delegate_address`, `delegate_street`, `delegate_street_number`, `delegate_city` |
 
 ---
 
@@ -501,11 +563,9 @@ curl http://127.0.0.1:8000/history/attendance
 
 1. Vote time và attendance time hiện là thời điểm listener nhận lifecycle event, không phải timer nội bộ CoCon.
 
-2. Attendance monitor event hiện không mang full delegate detail, nên vẫn phải fallback sang key nguồn `voting_result`.
+2. Attendance history được chốt khi nhận `CONTACT_MISSING_EVENT` (đến sau `SET_STOP(ATTENDANCE)`), không phải ngay lúc `SET_STOP`. Nếu một lượt attendance không có `CONTACT_MISSING_EVENT` theo sau thì session sẽ không được chốt vào history.
 
-3. Nếu `voting_result.contact` chưa cập nhật đúng thời điểm listener refresh directory, history có thể thiếu một phần contact fields.
-
-4. `present` của attendance hiện lấy từ snapshot `vote.ATTENDANCE` mới nhất trong key nguồn, nên phụ thuộc vào việc app `voting/` đã kịp set snapshot đó.
+3. Vote vẫn phụ thuộc `voting_result.contact` để lấy delegate detail; nếu contact chưa cập nhật đúng thời điểm, vote history có thể thiếu một phần contact fields. Attendance thì không, vì lấy trực tiếp từ `present_delegates` / `contact_missing`.
 
 ---
 
