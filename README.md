@@ -104,12 +104,76 @@ Project có sẵn:
 
 - [Dockerfile](/Volumes/external/Projects 2/Voting/Dockerfile:1)
 - [docker-compose.yml](/Volumes/external/Projects 2/Voting/docker-compose.yml:1)
+- [docker-compose.host.yml](/Volumes/external/Projects 2/Voting/docker-compose.host.yml:1) (Linux host network)
 
-Chạy:
+Chạy (bridge network):
 
 ```bash
 docker compose up -d --build
 ```
+
+### Docker Desktop Windows + Redis trong WSL2
+
+Đây là setup phổ biến: **host Python work**, Docker bị `Timeout connecting to server`.
+
+**Lý do:** container Docker không vào được network WSL như process Windows/WSL. Phải đi qua **Windows localhost port forward**.
+
+**Bước 1 — Redis trong WSL bind mọi interface**
+
+Trong WSL (`redis.conf` hoặc khi start):
+
+```bash
+# redis-server với bind 0.0.0.0 (hoặc comment bind 127.0.0.1)
+redis-cli CONFIG SET protected-mode no
+# kiểm tra đang listen
+ss -lntp | grep 6379
+```
+
+**Bước 2 — Kiểm tra từ Windows (PowerShell)**
+
+```powershell
+Test-NetConnection 127.0.0.1 -Port 6379
+```
+
+Phải `TcpTestSucceeded : True` (WSL2 localhost forwarding).
+
+**Bước 3 — `.env` cho Docker** (copy từ `.env.example`)
+
+```env
+SOURCE_REDIS_URL=redis://host.docker.internal:6379/0
+HISTORY_REDIS_URL=redis://host.docker.internal:6379/1
+MONITOR_CHANNEL=voting_monitor_channel_6
+```
+
+**Không** dùng `redis://127.0.0.1:6379` trong container (127.0.0.1 = chính container).  
+**Không** trông chờ `10.192.x.x` từ Docker nếu Redis chỉ chạy local WSL.
+
+**Bước 4 — Chạy lại**
+
+```bash
+docker compose down
+docker compose up -d --build
+docker compose logs -f listener
+```
+
+Log OK sẽ có `Redis ping ok` / subscribe channel.
+
+**Bước 5 — Test từ trong container**
+
+```bash
+docker compose exec listener python -c "from redis import Redis; print(Redis.from_url('redis://host.docker.internal:6379/0', socket_connect_timeout=5).ping())"
+```
+
+Phải in `True`.
+
+#### Nếu vẫn timeout
+
+| Check | Action |
+|---|---|
+| Redis chỉ bind `127.0.0.1` trong WSL | Đổi bind `0.0.0.0` |
+| Windows không thấy port 6379 | Restart WSL: `wsl --shutdown`, start Redis lại |
+| Docker Desktop cũ | Bật **WSL2 integration** cho distro đang chạy Redis |
+| Redis remote LAN từ WSL (không local) | Container vẫn khó VPN; chạy listener trên host hoặc Linux `docker-compose.host.yml` |
 
 Service được tạo:
 
@@ -120,14 +184,6 @@ Dừng:
 
 ```bash
 docker compose down
-```
-
-Nếu muốn override Redis/channel trên Windows, tạo file `.env` cạnh `docker-compose.yml`:
-
-```env
-SOURCE_REDIS_URL=redis://10.192.202.210:6379/0
-HISTORY_REDIS_URL=redis://10.192.202.210:6379/1
-MONITOR_CHANNEL=voting_monitor_channel_6
 ```
 
 ## Verify

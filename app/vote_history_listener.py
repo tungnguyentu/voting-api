@@ -19,7 +19,7 @@ from app.config import (
     SOURCE_REDIS_URL,
     SOURCE_VOTING_RESULT_KEY,
 )
-from app.redis_client import create_redis_client
+from app.redis_client import create_redis_client, ping_redis, redact_redis_url
 
 log = logging.getLogger("vote_history_listener")
 
@@ -650,20 +650,32 @@ def listen_vote_history(
     stop_when_idle: bool = False,
 ) -> None:
     retry_count = 0
-    print('start app worker')
+    log.info(
+        "Starting listener source=%s history=%s channel=%s",
+        redact_redis_url(source_redis_url),
+        redact_redis_url(history_redis_url),
+        monitor_channel,
+    )
     while True:
         try:
             source_redis = redis_factory(source_redis_url, decode_responses=True)
             history_redis = redis_factory(history_redis_url, decode_responses=True)
+            ping_redis(source_redis, label=f"SOURCE_REDIS ({redact_redis_url(source_redis_url)})")
+            ping_redis(history_redis, label=f"HISTORY_REDIS ({redact_redis_url(history_redis_url)})")
+            log.info("Redis ping ok for source and history")
+
             processor = VoteHistoryProcessor(source_redis=source_redis, history_redis=history_redis)
             processor.recover_active_sessions()
 
             subscriber = source_redis.pubsub()
             subscriber.subscribe(monitor_channel)
+            log.info("Subscribed to monitor channel %s", monitor_channel)
             retry_count = 0
 
             for message in subscriber.listen():
-                print('receive event', message)
+                if message.get("type") == "subscribe":
+                    log.info("Redis subscribe ack: %s", message)
+                    continue
                 if message.get("type") != "message":
                     continue
 
@@ -672,13 +684,18 @@ def listen_vote_history(
                     log.warning("Ignoring non-string monitor payload: %s", type(payload).__name__)
                     continue
 
+                log.info("receive event %s", payload)
                 process_pubsub_message(processor, payload)
 
             if stop_when_idle:
                 return
         except Exception:
             retry_count += 1
-            log.exception("Vote history listener crashed, retrying")
+            log.exception(
+                "Vote history listener crashed (source=%s history=%s), retrying",
+                redact_redis_url(source_redis_url),
+                redact_redis_url(history_redis_url),
+            )
             if max_retries is not None and retry_count >= max_retries:
                 raise
 

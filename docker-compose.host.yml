@@ -1,25 +1,20 @@
-# Docker Desktop Windows + Redis in WSL2:
-#   1. Redis in WSL: bind 0.0.0.0, port 6379
-#   2. Copy .env.example -> .env (uses host.docker.internal)
-#   3. docker compose up -d --build
+# Host networking so containers use the host LAN/VPN routing to Redis.
+# Linux only (Docker Engine). Docker Desktop Windows/Mac: host mode is limited.
 #
-# Linux server + Redis on LAN — host network:
+# Usage (instead of docker-compose.yml):
 #   docker compose -f docker-compose.host.yml up -d --build
+#
+# API: http://localhost:8000  (binds on host network)
 
 services:
   api:
     build:
       context: .
     container_name: voting-api
-    ports:
-      - "8000:8000"
-    extra_hosts:
-      # Docker Desktop: reach Windows host / WSL-forwarded localhost ports
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     environment:
-      # Default for Docker Desktop + Redis in WSL (override in .env for LAN Redis)
-      SOURCE_REDIS_URL: ${SOURCE_REDIS_URL:-redis://host.docker.internal:6379/0}
-      HISTORY_REDIS_URL: ${HISTORY_REDIS_URL:-redis://host.docker.internal:6379/1}
+      SOURCE_REDIS_URL: ${SOURCE_REDIS_URL:-redis://10.192.202.210:6379/0}
+      HISTORY_REDIS_URL: ${HISTORY_REDIS_URL:-redis://10.192.202.210:6379/1}
       SOURCE_VOTING_RESULT_KEY: ${SOURCE_VOTING_RESULT_KEY:-voting_result}
       HISTORY_VOTE_KEY: ${HISTORY_VOTE_KEY:-vote_history}
       HISTORY_ATTENDANCE_KEY: ${HISTORY_ATTENDANCE_KEY:-attendance_history}
@@ -35,12 +30,11 @@ services:
     build:
       context: .
     container_name: voting-history-listener
+    network_mode: host
     command: ["python", "-m", "app.vote_history_listener"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
-      SOURCE_REDIS_URL: ${SOURCE_REDIS_URL:-redis://host.docker.internal:6379/0}
-      HISTORY_REDIS_URL: ${HISTORY_REDIS_URL:-redis://host.docker.internal:6379/1}
+      SOURCE_REDIS_URL: ${SOURCE_REDIS_URL:-redis://10.192.202.210:6379/0}
+      HISTORY_REDIS_URL: ${HISTORY_REDIS_URL:-redis://10.192.202.210:6379/1}
       SOURCE_VOTING_RESULT_KEY: ${SOURCE_VOTING_RESULT_KEY:-voting_result}
       HISTORY_VOTE_KEY: ${HISTORY_VOTE_KEY:-vote_history}
       HISTORY_ATTENDANCE_KEY: ${HISTORY_ATTENDANCE_KEY:-attendance_history}
