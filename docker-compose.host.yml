@@ -24,7 +24,7 @@ services:
       ACTIVE_DISCUSS_KEY: ${ACTIVE_DISCUSS_KEY:-discuss_history_active}
       DELEGATE_DIRECTORY_KEY: ${DELEGATE_DIRECTORY_KEY:-delegate_directory}
       MONITOR_CHANNEL: ${MONITOR_CHANNEL:-voting_monitor_channel_6}
-    restart: unless-stopped
+    restart: always
 
   listener:
     build:
@@ -44,4 +44,4 @@ services:
       ACTIVE_DISCUSS_KEY: ${ACTIVE_DISCUSS_KEY:-discuss_history_active}
       DELEGATE_DIRECTORY_KEY: ${DELEGATE_DIRECTORY_KEY:-delegate_directory}
       MONITOR_CHANNEL: ${MONITOR_CHANNEL:-voting_monitor_channel_6}
-    restart: unless-stopped
+    restart: always

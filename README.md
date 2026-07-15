@@ -112,6 +112,40 @@ Chạy (bridge network):
 docker compose up -d --build
 ```
 
+### Tự chạy khi bật Docker Desktop (Windows)
+
+Compose **không** có nút “auto start project”, nhưng có 2 lớp:
+
+#### A. Container tự restart khi Docker engine lên (đơn giản)
+
+1. `restart: always` (đã bật trong `docker-compose.yml`)
+2. Chạy **một lần**:
+   ```powershell
+   docker compose up -d --build
+   ```
+3. Docker Desktop → **Settings → General** → bật **Start Docker Desktop when you sign in**
+4. **Không** `docker compose down` khi tắt máy (down xóa container → không auto lên lại). Chỉ tắt Docker Desktop / shutdown PC.
+
+Lần sau Docker Desktop start → `voting-api` + `voting-history-listener` tự chạy lại.
+
+#### B. Task Scheduler ép `compose up` mỗi lần đăng nhập (chắc hơn)
+
+1. Sửa path trong [`scripts/start-voting-api.ps1`](scripts/start-voting-api.ps1):
+   ```powershell
+   $ComposeDir = "D:\path\to\voting-api"
+   ```
+2. PowerShell **Run as Administrator** — tạo task:
+   ```powershell
+   $script = "D:\path\to\voting-api\scripts\start-voting-api.ps1"
+   $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`""
+   $trigger = New-ScheduledTaskTrigger -AtLogOn
+   Register-ScheduledTask -TaskName "StartVotingApiDocker" `
+     -Action $action -Trigger $trigger -Description "docker compose up voting-api when user logs on"
+   ```
+3. Script đợi Docker engine sẵn sàng (tối đa 5 phút) rồi `docker compose up -d`.
+4. Log: `%USERPROFILE%\Documents\voting-api-docker-start.log`
+
 ### Docker Desktop Windows + Redis trong WSL2
 
 Đây là setup phổ biến: **host Python work**, Docker bị `Timeout connecting to server`.
